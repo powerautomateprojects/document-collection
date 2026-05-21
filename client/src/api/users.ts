@@ -5,6 +5,8 @@ export interface AppUser {
   name: string
   email: string
   role: 'administrator' | 'team_manager' | 'user'
+  organizationId: number | null
+  organizationName: string | null
   organization?: string
   createdAt: string
 }
@@ -27,21 +29,14 @@ export async function createUser(payload: {
   name: string
   email: string
   role?: 'administrator' | 'team_manager' | 'user'
-  organization?: string
+  organizationId: number
 }): Promise<AppUser> {
-  const res = await fetch('/api/auth/register', {
+  const res = await fetch('/api/users', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(payload),
   })
-  // register returns { token, user }
-  handleUnauthorizedResponse(res)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as { error?: string }
-    throw new Error(body.error ?? `Request failed: ${res.status}`)
-  }
-  const data = await res.json() as { user: AppUser }
-  return data.user
+  return handleResponse<AppUser>(res)
 }
 
 export async function updateUser(
@@ -50,7 +45,7 @@ export async function updateUser(
     name: string
     email: string
     role: 'administrator' | 'team_manager' | 'user'
-    organization?: string
+    organizationId: number
   }
 ): Promise<AppUser> {
   const res = await fetch(`/api/users/${id}`, {

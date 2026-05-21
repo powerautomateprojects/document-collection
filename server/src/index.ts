@@ -9,6 +9,7 @@ import authRouter from './routes/auth'
 import usersRouter from './routes/users'
 import categoriesRouter from './routes/categories'
 import collectionsRouter from './routes/collections'
+import organizationsRouter from './routes/organizations'
 import settingsRouter from './routes/settings'
 import preferencesRouter from './routes/preferences'
 import notificationsRouter from './routes/notifications'
@@ -65,6 +66,7 @@ setupSwagger(app)
 // ── Routes ───────────────────────────────────────────────────
 app.use('/api/auth', authRouter)
 app.use('/api/users', usersRouter)
+app.use('/api/organizations', organizationsRouter)
 app.use('/api/categories', categoriesRouter)
 app.use('/api/collections', collectionsRouter)
 app.use('/api/settings', settingsRouter)

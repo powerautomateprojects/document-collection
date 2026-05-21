@@ -13,6 +13,8 @@ const EXISTING_USERS: User[] = [
     name: 'Jon Rivera',
     email: 'jon@datacollectionpro.com',
     role: 'administrator',
+    organizationId: 1,
+    organizationName: 'TSD',
     createdAt: '',
   },
   {
@@ -20,6 +22,8 @@ const EXISTING_USERS: User[] = [
     name: 'Sarah Chen',
     email: 'sarah@datacollectionpro.com',
     role: 'team_manager',
+    organizationId: 1,
+    organizationName: 'TSD',
     createdAt: '',
   },
   {
@@ -27,6 +31,8 @@ const EXISTING_USERS: User[] = [
     name: 'Mike Torres',
     email: 'mike@datacollectionpro.com',
     role: 'user',
+    organizationId: 1,
+    organizationName: 'TSD',
     createdAt: '',
   },
 ]

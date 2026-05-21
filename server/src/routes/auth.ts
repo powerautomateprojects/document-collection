@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import jwt from 'jsonwebtoken'
 import { getDb } from '../database/db'
-import { JWT_SECRET } from '../middleware/auth'
+import { authenticateToken, JWT_SECRET } from '../middleware/auth'
 
 const router = Router()
 
@@ -11,6 +11,8 @@ interface DbUser {
   email: string
   role: 'administrator' | 'team_manager' | 'user'
   organization: string | null
+  organization_id: number | null
+  organization_name?: string | null
   created_at: string
 }
 
@@ -20,9 +22,24 @@ function toApiUser(u: DbUser) {
     name: u.name,
     email: u.email,
     role: u.role,
+    organizationId: u.organization_id,
+    organizationName: u.organization_name ?? u.organization,
     ...(u.organization ? { organization: u.organization } : {}),
     createdAt: u.created_at,
   }
+}
+
+function signUserToken(user: DbUser): string {
+  return jwt.sign(
+    {
+      sub: user.id,
+      role: user.role,
+      organizationId: user.organization_id,
+      organizationName: user.organization_name ?? user.organization,
+    },
+    JWT_SECRET,
+    { expiresIn: '8h' },
+  )
 }
 
 /**
@@ -60,7 +77,12 @@ router.post('/login', (req: Request, res: Response) => {
 
   const db = getDb()
   const user = db
-    .prepare('SELECT * FROM users WHERE id = ?')
+    .prepare(
+      `SELECT u.*, o.name AS organization_name
+       FROM users u
+       LEFT JOIN organizations o ON o.id = u.organization_id
+       WHERE u.id = ?`
+    )
     .get(userId) as unknown as DbUser | undefined
 
   if (!user) {
@@ -68,9 +90,7 @@ router.post('/login', (req: Request, res: Response) => {
     return
   }
 
-  const token = jwt.sign({ sub: user.id, role: user.role }, JWT_SECRET, {
-    expiresIn: '8h',
-  })
+  const token = signUserToken(user)
 
   res.json({ token, user: toApiUser(user) })
 })
@@ -111,12 +131,17 @@ router.post('/login', (req: Request, res: Response) => {
  *       409:
  *         description: Email already registered
  */
-router.post('/register', (req: Request, res: Response) => {
-  const { name, email, role, organization } = req.body as {
+router.post('/register', authenticateToken, (req: Request, res: Response) => {
+  if (req.user?.role !== 'administrator') {
+    res.status(403).json({ error: 'Administrator access required' })
+    return
+  }
+
+  const { name, email, role, organizationId } = req.body as {
     name: unknown
     email: unknown
     role: unknown
-    organization: unknown
+    organizationId: unknown
   }
 
   if (typeof name !== 'string' || !name.trim()) {
@@ -134,6 +159,11 @@ router.post('/register', (req: Request, res: Response) => {
       ? (role as typeof VALID_ROLES[number])
       : 'user'
 
+  const resolvedOrganizationId =
+    typeof organizationId === 'number' && Number.isInteger(organizationId) && organizationId > 0
+      ? organizationId
+      : null
+
   const db = getDb()
 
   const existing = db
@@ -145,25 +175,37 @@ router.post('/register', (req: Request, res: Response) => {
     return
   }
 
-  const org =
-    typeof organization === 'string' && organization.trim()
-      ? organization.trim()
-      : null
+  if (resolvedOrganizationId === null) {
+    res.status(400).json({ error: 'organizationId is required' })
+    return
+  }
+
+  const organization = db
+    .prepare('SELECT id, name FROM organizations WHERE id = ? AND is_active = 1')
+    .get(resolvedOrganizationId) as unknown as { id: number; name: string } | undefined
+
+  if (!organization) {
+    res.status(400).json({ error: 'Selected organization does not exist' })
+    return
+  }
 
   const result = db
     .prepare(
-      'INSERT INTO users (name, email, role, organization) VALUES (?, ?, ?, ?)'
+      'INSERT INTO users (name, email, role, organization, organization_id) VALUES (?, ?, ?, ?, ?)'
     )
-    .run(name.trim(), email.trim(), userRole, org)
+    .run(name.trim(), email.trim(), userRole, organization.name, organization.id)
 
   const insertedId = Number(result.lastInsertRowid)
   const newUser = db
-    .prepare('SELECT * FROM users WHERE id = ?')
+    .prepare(
+      `SELECT u.*, o.name AS organization_name
+       FROM users u
+       LEFT JOIN organizations o ON o.id = u.organization_id
+       WHERE u.id = ?`
+    )
     .get(insertedId) as unknown as DbUser
 
-  const token = jwt.sign({ sub: newUser.id, role: newUser.role }, JWT_SECRET, {
-    expiresIn: '8h',
-  })
+  const token = signUserToken(newUser)
 
   res.status(201).json({ token, user: toApiUser(newUser) })
 })

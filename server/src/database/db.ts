@@ -88,6 +88,46 @@ function rebuildCollectionTableColumns(database: AppDatabase, preserveListOption
   }
 }
 
+function slugifyOrganizationName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
+function ensureOrganization(database: AppDatabase, name: string, description?: string): number {
+  const normalizedName = name.trim()
+  const existing = database
+    .prepare('SELECT id FROM organizations WHERE lower(name) = lower(?)')
+    .get(normalizedName) as unknown as { id: number } | undefined
+
+  if (existing) {
+    return existing.id
+  }
+
+  const baseSlug = slugifyOrganizationName(normalizedName) || 'organization'
+  let slug = baseSlug
+  let suffix = 1
+  while (
+    database.prepare('SELECT id FROM organizations WHERE slug = ?').get(slug)
+  ) {
+    suffix += 1
+    slug = `${baseSlug}-${suffix}`
+  }
+
+  const inserted = database
+    .prepare(
+      `INSERT INTO organizations (name, slug, description)
+       VALUES (?, ?, ?)`
+    )
+    .run(normalizedName, slug, description ?? null)
+
+  return Number(inserted.lastInsertRowid)
+}
+
 function normalizeSqlitePath(databaseUrl: string): string {
   return databaseUrl.replace(/^sqlite:\/\//, '').trim()
 }
@@ -267,11 +307,80 @@ export function setupDatabase(): void {
 }
 
 function runMigrations(db: AppDatabase): void {
+  const organizationsExists = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='organizations'`)
+    .get()
+  if (!organizationsExists) {
+    db.exec(`
+      CREATE TABLE organizations (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+        slug        TEXT    UNIQUE,
+        description TEXT,
+        is_active   INTEGER NOT NULL DEFAULT 1,
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+      )
+    `)
+    console.log('[db] Migration: created organizations table')
+  }
+
+  const defaultOrganizationId = ensureOrganization(db, 'TSD', 'Default organization')
+
+  const existingUserCols = db
+    .prepare(`PRAGMA table_info(users)`)
+    .all() as unknown as { name: string }[]
+  const userColNames = new Set(existingUserCols.map((c) => c.name))
+
+  if (!userColNames.has('organization_id')) {
+    db.exec(`ALTER TABLE users ADD COLUMN organization_id INTEGER`)
+    console.log('[db] Migration: added users.organization_id')
+  }
+
+  const existingOrganizationNames = db
+    .prepare(`
+      SELECT DISTINCT trim(organization) AS name
+      FROM users
+      WHERE organization IS NOT NULL AND trim(organization) <> ''
+    `)
+    .all() as unknown as Array<{ name: string }>
+
+  for (const row of existingOrganizationNames) {
+    ensureOrganization(db, row.name)
+  }
+
+  db.exec('BEGIN')
+  try {
+    const users = db
+      .prepare('SELECT id, organization, organization_id FROM users')
+      .all() as unknown as Array<{ id: number; organization: string | null; organization_id: number | null }>
+
+    for (const user of users) {
+      const organizationName = user.organization?.trim() || 'TSD'
+      const organizationId = user.organization_id ?? ensureOrganization(db, organizationName)
+      db.prepare('UPDATE users SET organization_id = ?, organization = ? WHERE id = ?').run(
+        organizationId,
+        organizationName,
+        user.id,
+      )
+    }
+
+    db.exec('COMMIT')
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
+
   // Add columns introduced after the initial schema without dropping existing data
   const existingCollectionCols = db
     .prepare(`PRAGMA table_info(collections)`)
     .all() as unknown as { name: string }[]
   const collectionColNames = new Set(existingCollectionCols.map(c => c.name))
+
+  if (!collectionColNames.has('organization_id')) {
+    db.exec(`ALTER TABLE collections ADD COLUMN organization_id INTEGER`)
+    console.log('[db] Migration: added collections.organization_id')
+  }
 
   if (!collectionColNames.has('description')) {
     db.exec(`ALTER TABLE collections ADD COLUMN description TEXT`)
@@ -487,6 +596,14 @@ function runMigrations(db: AppDatabase): void {
            WHERE collection_id = ? AND collection_version_id IS NULL`
         )
         .run(activeVersionId, col.id)
+
+      const creator = db
+        .prepare('SELECT organization_id FROM users WHERE id = ?')
+        .get(col.created_by) as unknown as { organization_id: number | null } | undefined
+
+      db
+        .prepare(`UPDATE collections SET organization_id = COALESCE(organization_id, ?) WHERE id = ?`)
+        .run(creator?.organization_id ?? defaultOrganizationId, col.id)
     }
 
     db.exec('COMMIT')

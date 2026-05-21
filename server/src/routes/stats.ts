@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import { getDb } from '../database/db'
 import { authenticateToken } from '../middleware/auth'
+import { loadRequestUserContext, isAdministrator } from '../middleware/organizationAccess'
 import { callGroq, checkRateLimit, GROQ_MAX_TOKENS, GROQ_MAX_DATE_RANGE_DAYS } from '../services/groq'
 import {
   buildReportsSummaryPrompt,
@@ -47,7 +48,8 @@ router.get('/public-summary', (_req: Request, res: Response): void => {
  * Returns dashboard KPI metrics. Accessible to administrators and team_managers only.
  */
 router.get('/', authenticateToken, (req: Request, res: Response): void => {
-  const role = req.user?.role
+  const context = loadRequestUserContext(req)
+  const role = context?.role
   if (role !== 'administrator' && role !== 'team_manager') {
     res.status(403).json({ error: 'Forbidden' })
     return
@@ -55,14 +57,17 @@ router.get('/', authenticateToken, (req: Request, res: Response): void => {
 
   try {
     const db = getDb()
+    const collectionParams = !isAdministrator(context!) && context?.organizationId ? [context.organizationId] : []
+    const collectionFilter = !isAdministrator(context!) && context?.organizationId ? ' AND organization_id = ?' : !isAdministrator(context!) ? ' AND 1 = 0' : ''
+    const submissionJoin = !isAdministrator(context!) && context?.organizationId ? 'JOIN collections c ON c.id = cr.collection_id AND c.organization_id = ?' : !isAdministrator(context!) ? 'JOIN collections c ON 1 = 0' : 'JOIN collections c ON c.id = cr.collection_id'
 
     const { openCount } = db
-      .prepare(`SELECT COUNT(*) AS openCount FROM collections WHERE status = 'published'`)
-      .get() as { openCount: number }
+      .prepare(`SELECT COUNT(*) AS openCount FROM collections WHERE status = 'published'${collectionFilter}`)
+      .get(...collectionParams) as { openCount: number }
 
     const { draftCount } = db
-      .prepare(`SELECT COUNT(*) AS draftCount FROM collections WHERE status = 'draft'`)
-      .get() as { draftCount: number }
+      .prepare(`SELECT COUNT(*) AS draftCount FROM collections WHERE status = 'draft'${collectionFilter}`)
+      .get(...collectionParams) as { draftCount: number }
 
     const { overdueCount } = db
       .prepare(
@@ -70,21 +75,22 @@ router.get('/', authenticateToken, (req: Request, res: Response): void => {
          FROM collections
          WHERE status = 'published'
            AND date_due IS NOT NULL
-           AND date_due < date('now')`
+           AND date_due < date('now')${collectionFilter}`
       )
-      .get() as { overdueCount: number }
+      .get(...collectionParams) as { overdueCount: number }
 
     const { totalSubmissions } = db
-      .prepare(`SELECT COUNT(*) AS totalSubmissions FROM collection_responses`)
-      .get() as { totalSubmissions: number }
+      .prepare(`SELECT COUNT(*) AS totalSubmissions FROM collection_responses cr ${submissionJoin}`)
+      .get(...collectionParams) as { totalSubmissions: number }
 
     const { submissionsThisWeek } = db
       .prepare(
         `SELECT COUNT(*) AS submissionsThisWeek
-         FROM collection_responses
-         WHERE submitted_at >= datetime('now', '-7 days')`
+         FROM collection_responses cr
+         ${submissionJoin}
+         WHERE cr.submitted_at >= datetime('now', '-7 days')`
       )
-      .get() as { submissionsThisWeek: number }
+      .get(...collectionParams) as { submissionsThisWeek: number }
 
     res.json({
       openCount,
@@ -106,7 +112,8 @@ router.get('/', authenticateToken, (req: Request, res: Response): void => {
 const VALID_DAYS = new Set([7, 30, 90])
 
 router.get('/reports', authenticateToken, (req: Request, res: Response): void => {
-  const role = req.user?.role
+  const context = loadRequestUserContext(req)
+  const role = context?.role
   if (role !== 'administrator' && role !== 'team_manager') {
     res.status(403).json({ error: 'Forbidden' })
     return
@@ -114,6 +121,9 @@ router.get('/reports', authenticateToken, (req: Request, res: Response): void =>
 
   try {
     const db = getDb()
+    const scopeParam = !isAdministrator(context!) && context?.organizationId ? [context.organizationId] : []
+    const collectionScope = !isAdministrator(context!) && context?.organizationId ? 'WHERE c.organization_id = ?' : !isAdministrator(context!) ? 'WHERE 1 = 0' : ''
+    const collectionScopeAnd = !isAdministrator(context!) && context?.organizationId ? 'AND c.organization_id = ?' : !isAdministrator(context!) ? 'AND 1 = 0' : ''
     const daysRaw = req.query.days as string | undefined
     const days: number | null =
       daysRaw === 'all' ? null
@@ -123,21 +133,23 @@ router.get('/reports', authenticateToken, (req: Request, res: Response): void =>
     const dateThreshold = days ? `datetime('now', '-${days} days')` : null
 
     // ── KPI ─────────────────────────────────────────────────
-    const subWhere = dateThreshold ? `WHERE submitted_at >= ${dateThreshold}` : ''
+    const subWhere = dateThreshold
+      ? `WHERE ${!isAdministrator(context!) && context?.organizationId ? 'c.organization_id = ? AND ' : !isAdministrator(context!) ? '1 = 0 AND ' : ''}cr.submitted_at >= ${dateThreshold}`
+      : (!isAdministrator(context!) && context?.organizationId ? 'WHERE c.organization_id = ?' : !isAdministrator(context!) ? 'WHERE 1 = 0' : '')
     const { totalSubmissions } = db
-      .prepare(`SELECT COUNT(*) AS totalSubmissions FROM collection_responses ${subWhere}`)
-      .get() as { totalSubmissions: number }
+      .prepare(`SELECT COUNT(*) AS totalSubmissions FROM collection_responses cr JOIN collections c ON c.id = cr.collection_id ${subWhere}`)
+      .get(...scopeParam) as { totalSubmissions: number }
 
     const { activeCollections } = db
-      .prepare(`SELECT COUNT(*) AS activeCollections FROM collections WHERE status = 'published'`)
-      .get() as { activeCollections: number }
+      .prepare(`SELECT COUNT(*) AS activeCollections FROM collections c WHERE status = 'published' ${collectionScopeAnd}`)
+      .get(...scopeParam) as { activeCollections: number }
 
     const { categoriesInUse } = db
       .prepare(
         `SELECT COUNT(DISTINCT category) AS categoriesInUse
-         FROM collections WHERE category IS NOT NULL AND status = 'published'`
+        FROM collections c WHERE category IS NOT NULL AND status = 'published' ${collectionScopeAnd}`
       )
-      .get() as { categoriesInUse: number }
+      .get(...scopeParam) as { categoriesInUse: number }
 
     const avgSubmissionsPerCollection =
       activeCollections > 0
@@ -148,12 +160,13 @@ router.get('/reports', authenticateToken, (req: Request, res: Response): void =>
     const submissionsOverTime = db
       .prepare(
         `SELECT date(submitted_at) AS date, COUNT(*) AS count
-         FROM collection_responses
+          FROM collection_responses cr
+          JOIN collections c ON c.id = cr.collection_id
          ${subWhere}
-         GROUP BY date(submitted_at)
+          GROUP BY date(cr.submitted_at)
          ORDER BY date ASC`
       )
-      .all() as { date: string; count: number }[]
+        .all(...scopeParam) as { date: string; count: number }[]
 
     // ── Collection performance ───────────────────────────────
     const crJoinCond = dateThreshold
@@ -167,10 +180,11 @@ router.get('/reports', authenticateToken, (req: Request, res: Response): void =>
                 MAX(cr.submitted_at) AS lastActivity
          FROM collections c
          LEFT JOIN collection_responses cr ${crJoinCond}
+        ${collectionScope}
          GROUP BY c.id
          ORDER BY submissionCount DESC, c.title ASC`
       )
-      .all() as {
+      .all(...scopeParam) as {
         id: number
         title: string
         category: string | null
@@ -186,10 +200,11 @@ router.get('/reports', authenticateToken, (req: Request, res: Response): void =>
                 COUNT(cr.id) AS count
          FROM collections c
          LEFT JOIN collection_responses cr ${crJoinCond}
+        ${collectionScope}
          GROUP BY COALESCE(c.category, 'Uncategorised')
          ORDER BY count DESC`
       )
-      .all() as { category: string; count: number }[]
+      .all(...scopeParam) as { category: string; count: number }[]
 
     // ── User activity (admin only) ───────────────────────────
     const crUserJoinCond = dateThreshold
@@ -241,8 +256,9 @@ router.get('/reports', authenticateToken, (req: Request, res: Response): void =>
 const VALID_FOCUS = new Set<FocusArea>(['general', 'trend', 'categories', 'collections', 'users'])
 
 router.post('/reports/summary-ai', authenticateToken, async (req: Request, res: Response): Promise<void> => {
-  const role = req.user?.role
-  const userId = req.user?.sub
+  const context = loadRequestUserContext(req)
+  const role = context?.role
+  const userId = context?.id
 
   if (role !== 'administrator' && role !== 'team_manager') {
     res.status(403).json({ error: 'Forbidden' })
@@ -284,9 +300,10 @@ router.post('/reports/summary-ai', authenticateToken, async (req: Request, res: 
 
   try {
     const db = getDb()
+    const scopeParam = !isAdministrator(context!) && context?.organizationId ? [context.organizationId] : []
     const dateThreshold = days ? `datetime('now', '-${days} days')` : null
     const selectedCollection = collectionId
-      ? db.prepare(`SELECT id, title, category, status FROM collections WHERE id = ?`).get(collectionId) as
+      ? db.prepare(`SELECT id, title, category, status FROM collections ${!isAdministrator(context!) && context?.organizationId ? 'WHERE id = ? AND organization_id = ?' : !isAdministrator(context!) ? 'WHERE 1 = 0' : 'WHERE id = ?'}`).get(...(!isAdministrator(context!) && context?.organizationId ? [collectionId, context.organizationId] : [collectionId])) as
           | { id: number; title: string; category: string | null; status: string }
           | undefined
       : undefined
@@ -298,6 +315,14 @@ router.post('/reports/summary-ai', authenticateToken, async (req: Request, res: 
 
     const responseWhereParts: string[] = []
     const responseParams: Array<string | number> = []
+    const collectionScopeWhere = !isAdministrator(context!) && context?.organizationId ? 'c.organization_id = ?' : !isAdministrator(context!) ? '1 = 0' : ''
+
+    if (collectionScopeWhere) {
+      responseWhereParts.push(collectionScopeWhere)
+      if (context?.organizationId) {
+        responseParams.push(context.organizationId)
+      }
+    }
 
     if (collectionId) {
       responseWhereParts.push('collection_id = ?')
@@ -311,23 +336,23 @@ router.post('/reports/summary-ai', authenticateToken, async (req: Request, res: 
 
     // ── Gather aggregates (same logic as /reports) ───────────
     const { totalSubmissions } = db
-      .prepare(`SELECT COUNT(*) AS totalSubmissions FROM collection_responses ${subWhere}`)
+      .prepare(`SELECT COUNT(*) AS totalSubmissions FROM collection_responses cr JOIN collections c ON c.id = cr.collection_id ${subWhere}`)
       .get(...responseParams) as { totalSubmissions: number }
 
     const activeCollections = selectedCollection
       ? selectedCollection.status === 'published' ? 1 : 0
       : ((db
-          .prepare(`SELECT COUNT(*) AS activeCollections FROM collections WHERE status = 'published'`)
-          .get() as { activeCollections: number }).activeCollections)
+          .prepare(`SELECT COUNT(*) AS activeCollections FROM collections WHERE status = 'published' ${!isAdministrator(context!) && context?.organizationId ? 'AND organization_id = ?' : !isAdministrator(context!) ? 'AND 1 = 0' : ''}`)
+          .get(...scopeParam) as { activeCollections: number }).activeCollections)
 
     const categoriesInUse = selectedCollection
       ? selectedCollection.category ? 1 : 0
       : ((db
           .prepare(
             `SELECT COUNT(DISTINCT category) AS categoriesInUse
-             FROM collections WHERE category IS NOT NULL AND status = 'published'`,
+             FROM collections WHERE category IS NOT NULL AND status = 'published' ${!isAdministrator(context!) && context?.organizationId ? 'AND organization_id = ?' : !isAdministrator(context!) ? 'AND 1 = 0' : ''}`,
           )
-          .get() as { categoriesInUse: number }).categoriesInUse)
+           .get(...scopeParam) as { categoriesInUse: number }).categoriesInUse)
 
     const avgSubmissionsPerCollection =
       activeCollections > 0
@@ -337,7 +362,7 @@ router.post('/reports/summary-ai', authenticateToken, async (req: Request, res: 
     const submissionsOverTime = db
       .prepare(
         `SELECT date(submitted_at) AS date, COUNT(*) AS count
-         FROM collection_responses ${subWhere}
+          FROM collection_responses cr JOIN collections c ON c.id = cr.collection_id ${subWhere}
          GROUP BY date(submitted_at) ORDER BY date ASC`,
       )
       .all(...responseParams) as { date: string; count: number }[]
@@ -350,10 +375,10 @@ router.post('/reports/summary-ai', authenticateToken, async (req: Request, res: 
              FROM collections c
              LEFT JOIN collection_responses cr
                ON cr.collection_id = c.id ${dateThreshold ? `AND cr.submitted_at >= ${dateThreshold}` : ''}
-             WHERE c.id = ?
+             WHERE c.id = ? ${!isAdministrator(context!) && context?.organizationId ? 'AND c.organization_id = ?' : !isAdministrator(context!) ? 'AND 1 = 0' : ''}
              GROUP BY c.id`,
           )
-          .get(collectionId) as { id: number; title: string; category: string | null; status: string; submissionCount: number; lastActivity: string | null }])
+           .get(...(!isAdministrator(context!) && context?.organizationId ? [collectionId, context.organizationId] : [collectionId])) as { id: number; title: string; category: string | null; status: string; submissionCount: number; lastActivity: string | null }])
       : (db
           .prepare(
             `SELECT c.id, c.title, c.category, c.status,
@@ -362,9 +387,10 @@ router.post('/reports/summary-ai', authenticateToken, async (req: Request, res: 
              LEFT JOIN collection_responses cr ${dateThreshold
                ? `ON cr.collection_id = c.id AND cr.submitted_at >= ${dateThreshold}`
                : `ON cr.collection_id = c.id`}
+             ${!isAdministrator(context!) && context?.organizationId ? 'WHERE c.organization_id = ?' : !isAdministrator(context!) ? 'WHERE 1 = 0' : ''}
              GROUP BY c.id ORDER BY submissionCount DESC, c.title ASC`,
           )
-          .all() as { id: number; title: string; category: string | null; status: string; submissionCount: number; lastActivity: string | null }[])
+           .all(...scopeParam) as { id: number; title: string; category: string | null; status: string; submissionCount: number; lastActivity: string | null }[])
 
     const categoryBreakdown = selectedCollection
       ? [{ category: selectedCollection.category ?? 'Uncategorised', count: totalSubmissions }]
@@ -375,9 +401,10 @@ router.post('/reports/summary-ai', authenticateToken, async (req: Request, res: 
              LEFT JOIN collection_responses cr ${dateThreshold
                ? `ON cr.collection_id = c.id AND cr.submitted_at >= ${dateThreshold}`
                : `ON cr.collection_id = c.id`}
+             ${!isAdministrator(context!) && context?.organizationId ? 'WHERE c.organization_id = ?' : !isAdministrator(context!) ? 'WHERE 1 = 0' : ''}
              GROUP BY COALESCE(c.category, 'Uncategorised') ORDER BY count DESC`,
           )
-          .all() as { category: string; count: number }[])
+          .all(...scopeParam) as { category: string; count: number }[])
 
     const userActivityWhereParts: string[] = ['cr.respondent_email = u.email']
     const userActivityParams: Array<string | number> = []

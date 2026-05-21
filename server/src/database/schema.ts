@@ -2,6 +2,18 @@ import type { AppDatabase } from './types'
 
 export function createSchema(db: AppDatabase): void {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS organizations (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      name        TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+      slug        TEXT    UNIQUE,
+      description TEXT,
+      is_active   INTEGER NOT NULL DEFAULT 1,
+      created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       name         TEXT    NOT NULL,
@@ -9,6 +21,7 @@ export function createSchema(db: AppDatabase): void {
       role         TEXT    NOT NULL DEFAULT 'user'
                            CHECK(role IN ('administrator', 'team_manager', 'user')),
       organization TEXT,
+      organization_id INTEGER REFERENCES organizations(id),
       created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
     );
   `)
@@ -37,6 +50,7 @@ export function createSchema(db: AppDatabase): void {
       logo_url             TEXT,
       instructions         TEXT,
       instructions_doc_url TEXT,
+      organization_id      INTEGER NOT NULL REFERENCES organizations(id),
       active_version_id    INTEGER,
       anonymous            INTEGER NOT NULL DEFAULT 0,
       allow_submission_edits INTEGER NOT NULL DEFAULT 0,
@@ -150,18 +164,27 @@ export function createSchema(db: AppDatabase): void {
 }
 
 export function seedData(db: AppDatabase): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO organizations (name, slug, description)
+     VALUES (?, ?, ?)`
+  ).run('TSD', 'tsd', 'Default organization')
+
+  const defaultOrganization = db
+    .prepare('SELECT id FROM organizations WHERE lower(name) = lower(?)')
+    .get('TSD') as unknown as { id: number }
+
   const userRow = db.prepare('SELECT COUNT(*) AS n FROM users').get() as unknown as { n: number }
 
   if (userRow.n === 0) {
     const insertUser = db.prepare(
-      'INSERT INTO users (name, email, role) VALUES (?, ?, ?)'
+      'INSERT INTO users (name, email, role, organization_id, organization) VALUES (?, ?, ?, ?, ?)'
     )
 
     db.exec('BEGIN')
     try {
-      insertUser.run('Jon Rivera',  'jon@datacollectionpro.com',   'administrator')
-      insertUser.run('Sarah Chen',  'sarah@datacollectionpro.com', 'team_manager')
-      insertUser.run('Mike Torres', 'mike@datacollectionpro.com',  'user')
+      insertUser.run('Jon Rivera',  'jon@datacollectionpro.com',   'administrator', defaultOrganization.id, 'TSD')
+      insertUser.run('Sarah Chen',  'sarah@datacollectionpro.com', 'team_manager', defaultOrganization.id, 'TSD')
+      insertUser.run('Mike Torres', 'mike@datacollectionpro.com',  'user', defaultOrganization.id, 'TSD')
       db.exec('COMMIT')
       console.log('[db] Seed users inserted')
     } catch (err) {

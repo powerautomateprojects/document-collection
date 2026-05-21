@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import { getDb } from '../database/db'
 import { authenticateToken } from '../middleware/auth'
+import { loadRequestUserContext, isAdministrator } from '../middleware/organizationAccess'
 import { generateDueDateNotifications } from '../services/notifications'
 
 const router = Router()
@@ -56,8 +57,8 @@ function toApiNotification(n: DbNotification) {
  *         description: Unauthorized
  */
 router.get('/', authenticateToken, (req: Request, res: Response) => {
-  const userId = req.user?.sub
-  if (!userId) {
+  const context = loadRequestUserContext(req)
+  if (!context) {
     res.status(401).json({ error: 'Authentication required' })
     return
   }
@@ -65,15 +66,26 @@ router.get('/', authenticateToken, (req: Request, res: Response) => {
   generateDueDateNotifications()
 
   const db = getDb()
+  const params: Array<number> = [context.id]
+  const scopeClause = !isAdministrator(context) && context.organizationId
+    ? 'AND c.organization_id = ?'
+    : !isAdministrator(context)
+      ? 'AND 1 = 0'
+      : ''
+  if (scopeClause.includes('?')) {
+    params.push(context.organizationId!)
+  }
   const rows = db
     .prepare(
-      `SELECT *
-       FROM notifications
-       WHERE user_id = ?
+      `SELECT n.*
+       FROM notifications n
+       JOIN collections c ON c.id = n.collection_id
+       WHERE n.user_id = ?
+       ${scopeClause}
        ORDER BY is_read ASC, created_at DESC
        LIMIT 100`
     )
-    .all(userId) as unknown as DbNotification[]
+    .all(...params) as unknown as DbNotification[]
 
   res.json(rows.map(toApiNotification))
 })
@@ -101,8 +113,8 @@ router.get('/', authenticateToken, (req: Request, res: Response) => {
  *         description: Unauthorized
  */
 router.get('/unread-count', authenticateToken, (req: Request, res: Response) => {
-  const userId = req.user?.sub
-  if (!userId) {
+  const context = loadRequestUserContext(req)
+  if (!context) {
     res.status(401).json({ error: 'Authentication required' })
     return
   }
@@ -110,9 +122,23 @@ router.get('/unread-count', authenticateToken, (req: Request, res: Response) => 
   generateDueDateNotifications()
 
   const db = getDb()
+  const params: Array<number> = [context.id]
+  const scopeClause = !isAdministrator(context) && context.organizationId
+    ? 'AND c.organization_id = ?'
+    : !isAdministrator(context)
+      ? 'AND 1 = 0'
+      : ''
+  if (scopeClause.includes('?')) {
+    params.push(context.organizationId!)
+  }
   const row = db
-    .prepare('SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND is_read = 0')
-    .get(userId) as unknown as { count: number }
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM notifications n
+       JOIN collections c ON c.id = n.collection_id
+       WHERE n.user_id = ? AND n.is_read = 0 ${scopeClause}`
+    )
+    .get(...params) as unknown as { count: number }
 
   res.json({ count: row.count })
 })
@@ -144,8 +170,8 @@ router.get('/unread-count', authenticateToken, (req: Request, res: Response) => 
  *         description: Notification not found
  */
 router.patch('/:id/read', authenticateToken, (req: Request, res: Response) => {
-  const userId = req.user?.sub
-  if (!userId) {
+  const context = loadRequestUserContext(req)
+  if (!context) {
     res.status(401).json({ error: 'Authentication required' })
     return
   }
@@ -158,8 +184,13 @@ router.patch('/:id/read', authenticateToken, (req: Request, res: Response) => {
 
   const db = getDb()
   const existing = db
-    .prepare('SELECT * FROM notifications WHERE id = ? AND user_id = ?')
-    .get(id, userId) as unknown as DbNotification | undefined
+    .prepare(
+      `SELECT n.*
+       FROM notifications n
+       JOIN collections c ON c.id = n.collection_id
+       WHERE n.id = ? AND n.user_id = ? ${!isAdministrator(context) && context.organizationId ? 'AND c.organization_id = ?' : !isAdministrator(context) ? 'AND 1 = 0' : ''}`
+    )
+    .get(...(!isAdministrator(context) && context.organizationId ? [id, context.id, context.organizationId] : [id, context.id])) as unknown as DbNotification | undefined
 
   if (!existing) {
     res.status(404).json({ error: 'Notification not found' })
@@ -171,11 +202,11 @@ router.patch('/:id/read', authenticateToken, (req: Request, res: Response) => {
      SET is_read = 1,
          read_at = COALESCE(read_at, datetime('now'))
      WHERE id = ? AND user_id = ?`
-  ).run(id, userId)
+  ).run(id, context.id)
 
   const updated = db
     .prepare('SELECT * FROM notifications WHERE id = ? AND user_id = ?')
-    .get(id, userId) as unknown as DbNotification
+    .get(id, context.id) as unknown as DbNotification
 
   res.json(toApiNotification(updated))
 })
@@ -203,21 +234,36 @@ router.patch('/:id/read', authenticateToken, (req: Request, res: Response) => {
  *         description: Unauthorized
  */
 router.patch('/read-all', authenticateToken, (req: Request, res: Response) => {
-  const userId = req.user?.sub
-  if (!userId) {
+  const context = loadRequestUserContext(req)
+  if (!context) {
     res.status(401).json({ error: 'Authentication required' })
     return
   }
 
   const db = getDb()
+  const ids = db
+    .prepare(
+      `SELECT n.id
+       FROM notifications n
+       JOIN collections c ON c.id = n.collection_id
+       WHERE n.user_id = ? AND n.is_read = 0 ${!isAdministrator(context) && context.organizationId ? 'AND c.organization_id = ?' : !isAdministrator(context) ? 'AND 1 = 0' : ''}`
+    )
+    .all(...(!isAdministrator(context) && context.organizationId ? [context.id, context.organizationId] : [context.id])) as Array<{ id: number }>
+
+  if (ids.length === 0) {
+    res.json({ updated: 0 })
+    return
+  }
+
+  const placeholders = ids.map(() => '?').join(',')
   const result = db
     .prepare(
       `UPDATE notifications
        SET is_read = 1,
            read_at = COALESCE(read_at, datetime('now'))
-       WHERE user_id = ? AND is_read = 0`
+       WHERE id IN (${placeholders})`
     )
-    .run(userId)
+    .run(...ids.map((row) => row.id))
 
   res.json({ updated: Number(result.changes ?? 0) })
 })

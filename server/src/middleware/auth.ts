@@ -5,7 +5,9 @@ const JWT_SECRET = process.env.JWT_SECRET ?? 'dcp-dev-secret-change-in-productio
 
 export interface JwtPayload {
   sub: number
-  role: string
+  role: 'administrator' | 'team_manager' | 'user'
+  organizationId?: number | null
+  organizationName?: string | null
 }
 
 // Augment Express Request with authenticated user

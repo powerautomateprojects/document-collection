@@ -5,8 +5,22 @@ export interface User {
   name: string
   email: string
   role: UserRole
+  organizationId: number | null
+  organizationName: string | null
   organization?: string
   createdAt: string
+}
+
+export interface Organization {
+  id: number
+  name: string
+  slug: string | null
+  description: string | null
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
+  userCount?: number
+  collectionCount?: number
 }
 
 export interface AuthResponse {
@@ -68,6 +82,8 @@ export interface Collection {
   status: CollectionStatus
   description: string | null
   category: string | null
+  organizationId: number
+  organizationName: string | null
   createdBy: number
   createdByName: string | null
   dateDue: string | null

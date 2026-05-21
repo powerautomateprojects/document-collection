@@ -1,5 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Bell, ChevronDown, ChevronRight, Code2, Database, ExternalLink, MessageSquare, Pencil, Plus, Save, Tag, Trash2, Users, X } from 'lucide-react'
+import { Bell, Building2, ChevronDown, ChevronRight, Code2, Database, ExternalLink, MessageSquare, Pencil, Plus, Save, Tag, Trash2, Users, X } from 'lucide-react'
+import {
+  createOrganization,
+  deleteOrganization,
+  listOrganizations,
+  updateOrganization,
+} from '../api/organizations'
 import {
   createCategory,
   deleteCategory,
@@ -10,7 +16,7 @@ import { listCollections, seedCollectionData } from '../api/collections'
 import { getPublicSetting, updateSetting } from '../api/settings'
 import { listUsers, createUser, deleteUser, updateUser, type AppUser } from '../api/users'
 import { useAuth } from '../contexts/AuthContext'
-import type { Category, Collection } from '../types'
+import type { Category, Collection, Organization } from '../types'
 import { getCategoryColorClasses } from '../utils/categoryColors'
 
 const INPUT =
@@ -40,11 +46,26 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [categoriesExpanded, setCategoriesExpanded] = useState(false)
+  const [qrCodeExpanded, setQrCodeExpanded] = useState(false)
+  const [logoPaddingExpanded, setLogoPaddingExpanded] = useState(false)
   const [apiExpanded, setApiExpanded] = useState(false)
   const [notificationsExpanded, setNotificationsExpanded] = useState(false)
   const [loginPageExpanded, setLoginPageExpanded] = useState(false)
+  const [organizationsExpanded, setOrganizationsExpanded] = useState(false)
   const [usersExpanded, setUsersExpanded] = useState(false)
   const [seedExpanded, setSeedExpanded] = useState(false)
+  const [organizations, setOrganizations] = useState<Organization[]>([])
+  const [organizationsLoading, setOrganizationsLoading] = useState(false)
+  const [newOrganizationName, setNewOrganizationName] = useState('')
+  const [newOrganizationDescription, setNewOrganizationDescription] = useState('')
+  const [organizationCreateSaving, setOrganizationCreateSaving] = useState(false)
+  const [organizationCreateError, setOrganizationCreateError] = useState<string | null>(null)
+  const [organizationSaveError, setOrganizationSaveError] = useState<string | null>(null)
+  const [organizationDeleteError, setOrganizationDeleteError] = useState<string | null>(null)
+  const [organizationEditSaving, setOrganizationEditSaving] = useState(false)
+  const [editingOrganizationId, setEditingOrganizationId] = useState<number | null>(null)
+  const [editingOrganizationName, setEditingOrganizationName] = useState('')
+  const [editingOrganizationDescription, setEditingOrganizationDescription] = useState('')
   const [allUsers, setAllUsers] = useState<AppUser[]>([])
   const [seedCollections, setSeedCollections] = useState<Collection[]>([])
   const [seedCollectionsLoading, setSeedCollectionsLoading] = useState(false)
@@ -57,7 +78,7 @@ export default function SettingsPage() {
   const [newUserName, setNewUserName] = useState('')
   const [newUserEmail, setNewUserEmail] = useState('')
   const [newUserRole, setNewUserRole] = useState<'user' | 'team_manager' | 'administrator'>('user')
-  const [newUserOrg, setNewUserOrg] = useState('')
+  const [newUserOrganizationId, setNewUserOrganizationId] = useState('')
   const [userCreateSaving, setUserCreateSaving] = useState(false)
   const [userCreateError, setUserCreateError] = useState<string | null>(null)
   const [userCreateSuccess, setUserCreateSuccess] = useState<number | null>(null)
@@ -66,7 +87,7 @@ export default function SettingsPage() {
   const [editingUserName, setEditingUserName] = useState('')
   const [editingUserEmail, setEditingUserEmail] = useState('')
   const [editingUserRole, setEditingUserRole] = useState<'user' | 'team_manager' | 'administrator'>('user')
-  const [editingUserOrg, setEditingUserOrg] = useState('')
+  const [editingUserOrganizationId, setEditingUserOrganizationId] = useState('')
   const [userEditSaving, setUserEditSaving] = useState(false)
   const [userEditError, setUserEditError] = useState<string | null>(null)
   const [loginSubtitle, setLoginSubtitle] = useState('')
@@ -141,6 +162,21 @@ export default function SettingsPage() {
       .finally(() => setLoading(false))
   }, [])
 
+  useEffect(() => {
+    if (user?.role === 'administrator') {
+      loadOrganizations()
+      loadUsers()
+    }
+  }, [user?.role])
+
+  function loadOrganizations() {
+    setOrganizationsLoading(true)
+    listOrganizations()
+      .then(setOrganizations)
+      .catch(err => setOrganizationCreateError((err as Error).message))
+      .finally(() => setOrganizationsLoading(false))
+  }
+
   function loadUsers() {
     setUsersLoading(true)
     listUsers()
@@ -163,17 +199,18 @@ export default function SettingsPage() {
   async function handleCreateUser() {
     const name = newUserName.trim()
     const email = newUserEmail.trim()
-    if (!name || !email) return
+    const organizationId = parseInt(newUserOrganizationId, 10)
+    if (!name || !email || !Number.isInteger(organizationId)) return
     setUserCreateSaving(true)
     setUserCreateError(null)
     setUserCreateSuccess(null)
     try {
-      const created = await createUser({ name, email, role: newUserRole, organization: newUserOrg.trim() || undefined })
+      const created = await createUser({ name, email, role: newUserRole, organizationId })
       setAllUsers(prev => [...prev, created])
       setUserCreateSuccess(created.id)
       setNewUserName('')
       setNewUserEmail('')
-      setNewUserOrg('')
+      setNewUserOrganizationId('')
       setNewUserRole('user')
     } catch (err) {
       setUserCreateError((err as Error).message)
@@ -192,11 +229,95 @@ export default function SettingsPage() {
         setEditingUserId(null)
         setEditingUserName('')
         setEditingUserEmail('')
-        setEditingUserOrg('')
+        setEditingUserOrganizationId('')
         setEditingUserRole('user')
       }
     } catch (err) {
       setUserDeleteError((err as Error).message)
+    }
+  }
+
+  async function handleCreateOrganization() {
+    const name = newOrganizationName.trim()
+    const description = newOrganizationDescription.trim()
+    if (!name) return
+
+    setOrganizationCreateSaving(true)
+    setOrganizationCreateError(null)
+    try {
+      const created = await createOrganization({
+        name,
+        description: description || undefined,
+      })
+      setOrganizations(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
+      setNewOrganizationName('')
+      setNewOrganizationDescription('')
+    } catch (err) {
+      setOrganizationCreateError((err as Error).message)
+    } finally {
+      setOrganizationCreateSaving(false)
+    }
+  }
+
+  function startOrganizationEdit(org: Organization) {
+    setEditingOrganizationId(org.id)
+    setEditingOrganizationName(org.name)
+    setEditingOrganizationDescription(org.description ?? '')
+    setOrganizationSaveError(null)
+    setOrganizationDeleteError(null)
+  }
+
+  function cancelOrganizationEdit() {
+    setEditingOrganizationId(null)
+    setEditingOrganizationName('')
+    setEditingOrganizationDescription('')
+    setOrganizationSaveError(null)
+  }
+
+  async function handleSaveOrganization(id: number) {
+    const name = editingOrganizationName.trim()
+    if (!name) {
+      setOrganizationSaveError('Organization name is required.')
+      return
+    }
+
+    setOrganizationEditSaving(true)
+    setOrganizationSaveError(null)
+    try {
+      const updated = await updateOrganization(id, {
+        name,
+        description: editingOrganizationDescription.trim() || undefined,
+      })
+      setOrganizations(prev => prev.map(org => (org.id === id ? updated : org)).sort((a, b) => a.name.localeCompare(b.name)))
+      setAllUsers(prev => prev.map(existing => (
+        existing.organizationId === updated.id
+          ? { ...existing, organizationName: updated.name, organization: updated.name }
+          : existing
+      )))
+      cancelOrganizationEdit()
+    } catch (err) {
+      setOrganizationSaveError((err as Error).message)
+    } finally {
+      setOrganizationEditSaving(false)
+    }
+  }
+
+  async function handleDeleteOrganization(id: number) {
+    setOrganizationDeleteError(null)
+    try {
+      await deleteOrganization(id)
+      setOrganizations(prev => prev.filter(org => org.id !== id))
+      if (newUserOrganizationId === String(id)) {
+        setNewUserOrganizationId('')
+      }
+      if (editingUserOrganizationId === String(id)) {
+        setEditingUserOrganizationId('')
+      }
+      if (editingOrganizationId === id) {
+        cancelOrganizationEdit()
+      }
+    } catch (err) {
+      setOrganizationDeleteError((err as Error).message)
     }
   }
 
@@ -283,7 +404,7 @@ export default function SettingsPage() {
     setEditingUserName(u.name)
     setEditingUserEmail(u.email)
     setEditingUserRole(u.role)
-    setEditingUserOrg(u.organization ?? '')
+    setEditingUserOrganizationId(u.organizationId ? String(u.organizationId) : '')
     setUserEditError(null)
     setUserDeleteError(null)
   }
@@ -292,7 +413,7 @@ export default function SettingsPage() {
     setEditingUserId(null)
     setEditingUserName('')
     setEditingUserEmail('')
-    setEditingUserOrg('')
+    setEditingUserOrganizationId('')
     setEditingUserRole('user')
     setUserEditError(null)
   }
@@ -300,8 +421,13 @@ export default function SettingsPage() {
   async function handleSaveUser(id: number) {
     const name = editingUserName.trim()
     const email = editingUserEmail.trim()
+    const organizationId = parseInt(editingUserOrganizationId, 10)
     if (!name || !email) {
       setUserEditError('Name and email are required.')
+      return
+    }
+    if (!Number.isInteger(organizationId)) {
+      setUserEditError('Organization is required.')
       return
     }
 
@@ -312,7 +438,7 @@ export default function SettingsPage() {
         name,
         email,
         role: editingUserRole,
-        organization: editingUserOrg.trim() || undefined,
+        organizationId,
       })
       setAllUsers(prev => prev.map(u => (u.id === id ? updated : u)))
       cancelUserEdit()
@@ -388,6 +514,7 @@ export default function SettingsPage() {
   }
 
   const selectedSeedCollection = seedCollections.find(collection => String(collection.id) === seedCollectionId) ?? null
+  const organizationOptions = organizations.filter(org => org.isActive)
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -549,7 +676,11 @@ export default function SettingsPage() {
       </section>
 
       <section className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
-        <div className="w-full flex items-start justify-between gap-4 px-5 py-4 text-left">
+        <button
+          type="button"
+          onClick={() => setQrCodeExpanded(expanded => !expanded)}
+          className="w-full flex items-center justify-between gap-4 px-5 py-4 text-left hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
+        >
           <div className="flex items-start gap-3">
             <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#EFF6FF] text-[#2563EB] dark:bg-blue-900/30 dark:text-blue-300">
               <Code2 size={18} />
@@ -559,42 +690,55 @@ export default function SettingsPage() {
               <p className="text-sm text-[#64748B] mt-1">Show or hide the survey link QR code at the bottom of the public Instructions tab.</p>
             </div>
           </div>
-        </div>
-
-        <div className="border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-4">
-          <label className="flex items-center justify-between gap-4 rounded-lg border border-[#E2E8F0] dark:border-[#334155] px-4 py-3">
-            <div>
-              <p className="text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9]">Show QR code on survey instructions</p>
-              <p className="text-xs text-[#64748B] mt-1">Respondents can scan the QR code to open the same survey link on another device.</p>
-            </div>
-            <input
-              type="checkbox"
-              checked={qrCodeEnabled}
-              onChange={e => {
-                void handleQrCodeToggle(e.target.checked)
-              }}
-              disabled={qrCodeSaving}
-              className="h-4 w-4 accent-[#2563EB]"
-            />
-          </label>
-
-          {qrCodeError && (
-            <p className="text-sm text-red-500">{qrCodeError}</p>
-          )}
-
-          <div className="flex items-center gap-3">
-            {qrCodeSaving && (
-              <span className="text-sm text-[#64748B]">Saving…</span>
-            )}
-            {qrCodeSaved && (
-              <span className="text-sm text-green-600 dark:text-green-400">Saved!</span>
+          <div className="flex items-center gap-3 shrink-0">
+            {qrCodeExpanded ? (
+              <ChevronDown size={18} className="text-[#64748B]" />
+            ) : (
+              <ChevronRight size={18} className="text-[#64748B]" />
             )}
           </div>
-        </div>
+        </button>
+
+        {qrCodeExpanded && (
+          <div className="border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-4">
+            <label className="flex items-center justify-between gap-4 rounded-lg border border-[#E2E8F0] dark:border-[#334155] px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9]">Show QR code on survey instructions</p>
+                <p className="text-xs text-[#64748B] mt-1">Respondents can scan the QR code to open the same survey link on another device.</p>
+              </div>
+              <input
+                type="checkbox"
+                checked={qrCodeEnabled}
+                onChange={e => {
+                  void handleQrCodeToggle(e.target.checked)
+                }}
+                disabled={qrCodeSaving}
+                className="h-4 w-4 accent-[#2563EB]"
+              />
+            </label>
+
+            {qrCodeError && (
+              <p className="text-sm text-red-500">{qrCodeError}</p>
+            )}
+
+            <div className="flex items-center gap-3">
+              {qrCodeSaving && (
+                <span className="text-sm text-[#64748B]">Saving…</span>
+              )}
+              {qrCodeSaved && (
+                <span className="text-sm text-green-600 dark:text-green-400">Saved!</span>
+              )}
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
-        <div className="w-full flex items-start justify-between gap-4 px-5 py-4 text-left">
+        <button
+          type="button"
+          onClick={() => setLogoPaddingExpanded(expanded => !expanded)}
+          className="w-full flex items-center justify-between gap-4 px-5 py-4 text-left hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
+        >
           <div className="flex items-start gap-3">
             <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#EFF6FF] text-[#2563EB] dark:bg-blue-900/30 dark:text-blue-300">
               <Code2 size={18} />
@@ -604,47 +748,56 @@ export default function SettingsPage() {
               <p className="text-sm text-[#64748B] mt-1">Set individual logo padding values for the survey logo wrapper. Defaults are 0 on all sides.</p>
             </div>
           </div>
-        </div>
-
-        <div className="border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">Top</label>
-              <input type="number" min={0} value={logoPaddingTop} onChange={e => { setLogoPaddingTop(e.target.value); setLogoPaddingSaved(false); setLogoPaddingError(null) }} className={INPUT} />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">Right</label>
-              <input type="number" min={0} value={logoPaddingRight} onChange={e => { setLogoPaddingRight(e.target.value); setLogoPaddingSaved(false); setLogoPaddingError(null) }} className={INPUT} />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">Bottom</label>
-              <input type="number" min={0} value={logoPaddingBottom} onChange={e => { setLogoPaddingBottom(e.target.value); setLogoPaddingSaved(false); setLogoPaddingError(null) }} className={INPUT} />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">Left</label>
-              <input type="number" min={0} value={logoPaddingLeft} onChange={e => { setLogoPaddingLeft(e.target.value); setLogoPaddingSaved(false); setLogoPaddingError(null) }} className={INPUT} />
-            </div>
-          </div>
-
-          {logoPaddingError && (
-            <p className="text-sm text-red-500">{logoPaddingError}</p>
-          )}
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              disabled={logoPaddingSaving}
-              onClick={() => void handleSaveLogoPadding()}
-              className="inline-flex items-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
-            >
-              <Save size={14} />
-              {logoPaddingSaving ? 'Saving…' : 'Save Logo Padding'}
-            </button>
-            {logoPaddingSaved && (
-              <span className="text-sm text-green-600 dark:text-green-400">Saved!</span>
+          <div className="flex items-center gap-3 shrink-0">
+            {logoPaddingExpanded ? (
+              <ChevronDown size={18} className="text-[#64748B]" />
+            ) : (
+              <ChevronRight size={18} className="text-[#64748B]" />
             )}
           </div>
-        </div>
+        </button>
+
+        {logoPaddingExpanded && (
+          <div className="border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">Top</label>
+                <input type="number" min={0} value={logoPaddingTop} onChange={e => { setLogoPaddingTop(e.target.value); setLogoPaddingSaved(false); setLogoPaddingError(null) }} className={INPUT} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">Right</label>
+                <input type="number" min={0} value={logoPaddingRight} onChange={e => { setLogoPaddingRight(e.target.value); setLogoPaddingSaved(false); setLogoPaddingError(null) }} className={INPUT} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">Bottom</label>
+                <input type="number" min={0} value={logoPaddingBottom} onChange={e => { setLogoPaddingBottom(e.target.value); setLogoPaddingSaved(false); setLogoPaddingError(null) }} className={INPUT} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">Left</label>
+                <input type="number" min={0} value={logoPaddingLeft} onChange={e => { setLogoPaddingLeft(e.target.value); setLogoPaddingSaved(false); setLogoPaddingError(null) }} className={INPUT} />
+              </div>
+            </div>
+
+            {logoPaddingError && (
+              <p className="text-sm text-red-500">{logoPaddingError}</p>
+            )}
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                disabled={logoPaddingSaving}
+                onClick={() => void handleSaveLogoPadding()}
+                className="inline-flex items-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+              >
+                <Save size={14} />
+                {logoPaddingSaving ? 'Saving…' : 'Save Logo Padding'}
+              </button>
+              {logoPaddingSaved && (
+                <span className="text-sm text-green-600 dark:text-green-400">Saved!</span>
+              )}
+            </div>
+          </div>
+        )}
       </section>
 
       {/* API Documentation */}
@@ -918,6 +1071,186 @@ export default function SettingsPage() {
         )}
       </section>
 
+      {/* Organizations */}
+      <section className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setOrganizationsExpanded(expanded => !expanded)}
+          className="w-full flex items-center justify-between gap-4 px-5 py-4 text-left hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
+        >
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#ECFDF5] text-[#15803D] dark:bg-green-900/30 dark:text-green-300">
+              <Building2 size={18} />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Organizations</h2>
+              <p className="text-sm text-[#64748B] mt-1">Create, update, and remove organizations used to scope users and collections.</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            <span className="text-xs font-medium text-[#64748B]">{organizations.length} total</span>
+            {organizationsExpanded ? (
+              <ChevronDown size={18} className="text-[#64748B]" />
+            ) : (
+              <ChevronRight size={18} className="text-[#64748B]" />
+            )}
+          </div>
+        </button>
+
+        {organizationsExpanded && (
+          <div className="border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-6">
+            <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-3 items-end">
+              <div>
+                <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Name <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  value={newOrganizationName}
+                  onChange={e => setNewOrganizationName(e.target.value)}
+                  placeholder="TSD"
+                  className={INPUT}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Description</label>
+                <input
+                  type="text"
+                  value={newOrganizationDescription}
+                  onChange={e => setNewOrganizationDescription(e.target.value)}
+                  placeholder="Optional description"
+                  className={INPUT}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleCreateOrganization()}
+                disabled={organizationCreateSaving || !newOrganizationName.trim()}
+                className="inline-flex items-center justify-center gap-1.5 bg-[#15803D] hover:bg-green-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+              >
+                <Plus size={14} />
+                {organizationCreateSaving ? 'Creating…' : 'Add Organization'}
+              </button>
+            </div>
+
+            {organizationCreateError && <p className="text-sm text-red-500">{organizationCreateError}</p>}
+            {organizationSaveError && <p className="text-sm text-red-500">{organizationSaveError}</p>}
+            {organizationDeleteError && <p className="text-sm text-red-500">{organizationDeleteError}</p>}
+
+            <div className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] overflow-hidden">
+              <table className="hidden md:table w-full text-sm">
+                <thead>
+                  <tr className="bg-[#F8FAFC] dark:bg-[#0F172A] text-left">
+                    <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide">Name</th>
+                    <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide">Description</th>
+                    <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide">Users</th>
+                    <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide">Collections</th>
+                    <th className="px-4 py-2.5 w-[170px]"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E2E8F0] dark:divide-[#334155]">
+                  {organizations.map(org => {
+                    const isEditing = editingOrganizationId === org.id
+                    return (
+                      <tr key={org.id}>
+                        <td className="px-4 py-2.5 text-[#1E293B] dark:text-[#F1F5F9] min-w-[180px]">
+                          {isEditing ? (
+                            <input type="text" value={editingOrganizationName} onChange={e => setEditingOrganizationName(e.target.value)} className={INPUT} />
+                          ) : org.name}
+                        </td>
+                        <td className="px-4 py-2.5 text-[#64748B] min-w-[220px]">
+                          {isEditing ? (
+                            <input type="text" value={editingOrganizationDescription} onChange={e => setEditingOrganizationDescription(e.target.value)} className={INPUT} placeholder="Optional description" />
+                          ) : (org.description ?? '—')}
+                        </td>
+                        <td className="px-4 py-2.5 text-[#64748B]">{org.userCount ?? 0}</td>
+                        <td className="px-4 py-2.5 text-[#64748B]">{org.collectionCount ?? 0}</td>
+                        <td className="px-4 py-2.5 text-right">
+                          <div className="inline-flex items-center gap-2">
+                            {isEditing ? (
+                              <>
+                                <button type="button" onClick={() => void handleSaveOrganization(org.id)} disabled={organizationEditSaving || !editingOrganizationName.trim()} className="inline-flex items-center gap-1 border border-[#16A34A] text-[#16A34A] hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50 text-xs font-medium px-2 py-1 rounded transition-colors">
+                                  <Save size={12} />
+                                  Save
+                                </button>
+                                <button type="button" onClick={cancelOrganizationEdit} disabled={organizationEditSaving} className="inline-flex items-center gap-1 border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-xs font-medium px-2 py-1 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors">
+                                  <X size={12} />
+                                  Cancel
+                                </button>
+                              </>
+                            ) : (
+                              <button type="button" onClick={() => startOrganizationEdit(org)} className="text-[#94A3B8] hover:text-[#2563EB] transition-colors" title={`Edit ${org.name}`}>
+                                <Pencil size={14} />
+                              </button>
+                            )}
+                            {!isEditing && (
+                              <button type="button" onClick={() => void handleDeleteOrganization(org.id)} className="text-[#94A3B8] hover:text-red-500 transition-colors" title={`Delete ${org.name}`}>
+                                <Trash2 size={14} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {organizations.length === 0 && !organizationsLoading && (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-6 text-center text-sm text-[#94A3B8] italic">No organizations found.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+
+              <div className="md:hidden divide-y divide-[#E2E8F0] dark:divide-[#334155]">
+                {organizations.map(org => {
+                  const isEditing = editingOrganizationId === org.id
+                  return (
+                    <div key={org.id} className="p-4 space-y-3">
+                      {isEditing ? (
+                        <div className="space-y-2">
+                          <input type="text" value={editingOrganizationName} onChange={e => setEditingOrganizationName(e.target.value)} className={INPUT} placeholder="Organization name" />
+                          <input type="text" value={editingOrganizationDescription} onChange={e => setEditingOrganizationDescription(e.target.value)} className={INPUT} placeholder="Optional description" />
+                        </div>
+                      ) : (
+                        <div>
+                          <p className="text-sm font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{org.name}</p>
+                          <p className="text-sm text-[#64748B] mt-1">{org.description ?? 'No description'}</p>
+                          <p className="text-xs text-[#94A3B8] mt-2">Users: {org.userCount ?? 0} • Collections: {org.collectionCount ?? 0}</p>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2">
+                        {isEditing ? (
+                          <>
+                            <button type="button" onClick={() => void handleSaveOrganization(org.id)} disabled={organizationEditSaving || !editingOrganizationName.trim()} className="inline-flex items-center gap-1 border border-[#16A34A] text-[#16A34A] hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50 text-xs font-medium px-2.5 py-1.5 rounded transition-colors">
+                              <Save size={12} />
+                              Save
+                            </button>
+                            <button type="button" onClick={cancelOrganizationEdit} disabled={organizationEditSaving} className="inline-flex items-center gap-1 border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-xs font-medium px-2.5 py-1.5 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors">
+                              <X size={12} />
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button type="button" onClick={() => startOrganizationEdit(org)} className="inline-flex items-center gap-1 border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-xs font-medium px-2.5 py-1.5 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors">
+                            <Pencil size={12} />
+                            Edit
+                          </button>
+                        )}
+                        {!isEditing && (
+                          <button type="button" onClick={() => void handleDeleteOrganization(org.id)} className="inline-flex items-center gap-1 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-xs font-medium px-2.5 py-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                            <Trash2 size={12} />
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
         {/* User Accounts */}
         <section className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
           <button
@@ -987,21 +1320,24 @@ export default function SettingsPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Organization <span className="text-[#94A3B8]">(optional)</span></label>
-                    <input
-                      type="text"
-                      value={newUserOrg}
-                      onChange={e => setNewUserOrg(e.target.value)}
-                      placeholder="Alpha Team"
+                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Organization <span className="text-red-500">*</span></label>
+                    <select
+                      value={newUserOrganizationId}
+                      onChange={e => setNewUserOrganizationId(e.target.value)}
                       className={INPUT}
-                    />
+                    >
+                      <option value="">Select organization</option>
+                      {organizationOptions.map(org => (
+                        <option key={org.id} value={String(org.id)}>{org.name}</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
                     onClick={() => void handleCreateUser()}
-                    disabled={userCreateSaving || !newUserName.trim() || !newUserEmail.trim()}
+                    disabled={userCreateSaving || !newUserName.trim() || !newUserEmail.trim() || !newUserOrganizationId}
                     className="inline-flex items-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
                   >
                     <Users size={14} />
@@ -1104,15 +1440,18 @@ export default function SettingsPage() {
                             </td>
                             <td className="px-4 py-2.5 text-[#64748B] min-w-[170px]">
                               {isEditing ? (
-                                <input
-                                  type="text"
-                                  value={editingUserOrg}
-                                  onChange={e => setEditingUserOrg(e.target.value)}
-                                  placeholder="Organization"
+                                <select
+                                  value={editingUserOrganizationId}
+                                  onChange={e => setEditingUserOrganizationId(e.target.value)}
                                   className={INPUT}
-                                />
+                                >
+                                  <option value="">Select organization</option>
+                                  {organizationOptions.map(org => (
+                                    <option key={org.id} value={String(org.id)}>{org.name}</option>
+                                  ))}
+                                </select>
                               ) : (
-                                u.organization ?? '—'
+                                u.organizationName ?? u.organization ?? '—'
                               )}
                             </td>
                             <td className="px-4 py-2.5 text-right">
@@ -1218,18 +1557,21 @@ export default function SettingsPage() {
                                 <option value="team_manager">Team Manager</option>
                                 <option value="administrator">Administrator</option>
                               </select>
-                              <input
-                                type="text"
-                                value={editingUserOrg}
-                                onChange={e => setEditingUserOrg(e.target.value)}
-                                placeholder="Organization (optional)"
+                              <select
+                                value={editingUserOrganizationId}
+                                onChange={e => setEditingUserOrganizationId(e.target.value)}
                                 className={INPUT}
-                              />
+                              >
+                                <option value="">Select organization</option>
+                                {organizationOptions.map(org => (
+                                  <option key={org.id} value={String(org.id)}>{org.name}</option>
+                                ))}
+                              </select>
                             </div>
                           ) : (
                             <div className="space-y-1 text-sm text-[#64748B]">
                               <p>{u.email}</p>
-                              <p>Organization: {u.organization ?? '—'}</p>
+                              <p>Organization: {u.organizationName ?? u.organization ?? '—'}</p>
                             </div>
                           )}
 

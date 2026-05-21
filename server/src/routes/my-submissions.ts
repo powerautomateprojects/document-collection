@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import { getDb } from '../database/db'
 import { authenticateToken } from '../middleware/auth'
+import { loadRequestUserContext, isAdministrator } from '../middleware/organizationAccess'
 
 const router = Router()
 
@@ -57,8 +58,8 @@ function isEditableNow(editableUntil: string | null): boolean {
  * Returns all submissions made by the authenticated user (matched by email).
  */
 router.get('/', (req: Request, res: Response): void => {
-  const userId = req.user?.sub
-  if (!userId) {
+  const context = loadRequestUserContext(req)
+  if (!context) {
     res.status(401).json({ error: 'Authentication required' })
     return
   }
@@ -68,7 +69,7 @@ router.get('/', (req: Request, res: Response): void => {
 
     const userRow = db
       .prepare('SELECT email FROM users WHERE id = ?')
-      .get(userId) as DbUser | undefined
+      .get(context.id) as DbUser | undefined
 
     if (!userRow) {
       res.status(404).json({ error: 'User not found' })
@@ -91,10 +92,10 @@ router.get('/', (req: Request, res: Response): void => {
          FROM collection_responses cr
          JOIN collections c ON c.id = cr.collection_id
          LEFT JOIN collection_versions cv ON cv.id = cr.collection_version_id
-         WHERE cr.respondent_email = ?
+        WHERE cr.respondent_email = ? ${!isAdministrator(context) && context.organizationId ? 'AND c.organization_id = ?' : !isAdministrator(context) ? 'AND 1 = 0' : ''}
          ORDER BY cr.submitted_at DESC`
       )
-      .all(userRow.email) as unknown as DbSubmissionRow[]
+      .all(...(!isAdministrator(context) && context.organizationId ? [userRow.email, context.organizationId] : [userRow.email])) as unknown as DbSubmissionRow[]
 
     res.json(
       rows.map(r => ({
@@ -120,10 +121,10 @@ router.get('/', (req: Request, res: Response): void => {
  * Returns the field values for a specific response, verified to belong to the caller.
  */
 router.get('/:responseId', (req: Request, res: Response): void => {
-  const userId = req.user?.sub
+  const context = loadRequestUserContext(req)
   const responseId = parseInt(req.params.responseId, 10)
 
-  if (!userId || isNaN(responseId)) {
+  if (!context || isNaN(responseId)) {
     res.status(400).json({ error: 'Invalid request' })
     return
   }
@@ -133,7 +134,7 @@ router.get('/:responseId', (req: Request, res: Response): void => {
 
     const userRow = db
       .prepare('SELECT email FROM users WHERE id = ?')
-      .get(userId) as DbUser | undefined
+      .get(context.id) as DbUser | undefined
 
     if (!userRow) {
       res.status(404).json({ error: 'User not found' })
@@ -150,9 +151,9 @@ router.get('/:responseId', (req: Request, res: Response): void => {
          FROM collection_responses cr
          JOIN collections c ON c.id = cr.collection_id
        LEFT JOIN collection_versions cv ON cv.id = cr.collection_version_id
-         WHERE cr.id = ? AND cr.respondent_email = ?`
+        WHERE cr.id = ? AND cr.respondent_email = ? ${!isAdministrator(context) && context.organizationId ? 'AND c.organization_id = ?' : !isAdministrator(context) ? 'AND 1 = 0' : ''}`
       )
-      .get(responseId, userRow.email) as DbSubmissionRow | undefined
+      .get(...(!isAdministrator(context) && context.organizationId ? [responseId, userRow.email, context.organizationId] : [responseId, userRow.email])) as DbSubmissionRow | undefined
 
     if (!responseRow) {
       res.status(404).json({ error: 'Submission not found' })
@@ -206,10 +207,10 @@ router.get('/:responseId', (req: Request, res: Response): void => {
 })
 
 router.put('/:responseId', (req: Request, res: Response): void => {
-  const userId = req.user?.sub
+  const context = loadRequestUserContext(req)
   const responseId = parseInt(req.params.responseId, 10)
 
-  if (!userId || isNaN(responseId)) {
+  if (!context || isNaN(responseId)) {
     res.status(400).json({ error: 'Invalid request' })
     return
   }
@@ -224,7 +225,7 @@ router.put('/:responseId', (req: Request, res: Response): void => {
     const db = getDb()
     const userRow = db
       .prepare('SELECT email FROM users WHERE id = ?')
-      .get(userId) as DbUser | undefined
+      .get(context.id) as DbUser | undefined
 
     if (!userRow) {
       res.status(404).json({ error: 'User not found' })
@@ -236,9 +237,10 @@ router.put('/:responseId', (req: Request, res: Response): void => {
         `SELECT cr.id AS response_id, cr.collection_id, cr.collection_version_id,
                 cr.editable_until, cr.respondent_email
          FROM collection_responses cr
-         WHERE cr.id = ? AND cr.respondent_email = ?`
+         JOIN collections c ON c.id = cr.collection_id
+         WHERE cr.id = ? AND cr.respondent_email = ? ${!isAdministrator(context) && context.organizationId ? 'AND c.organization_id = ?' : !isAdministrator(context) ? 'AND 1 = 0' : ''}`
       )
-      .get(responseId, userRow.email) as {
+            .get(...(!isAdministrator(context) && context.organizationId ? [responseId, userRow.email, context.organizationId] : [responseId, userRow.email])) as {
       response_id: number
       collection_id: number
       collection_version_id: number | null

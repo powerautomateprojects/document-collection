@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { getDb } from '../database/db'
 import { authenticateToken, JWT_SECRET } from '../middleware/auth'
+import { loadRequestUserContext, isAdministrator, type RequestUserContext } from '../middleware/organizationAccess'
 
 const router = Router()
 
@@ -49,6 +50,8 @@ interface DbCollection {
   status: 'draft' | 'published'
   description: string | null
   category: string | null
+  organization_id: number
+  organization_name?: string | null
   created_by: number
   date_due: string | null
   cover_photo_url: string | null
@@ -189,6 +192,7 @@ function serialiseBranchRules(rules?: FieldBranchRule[]): string | null {
 interface CollectionBody {
   title: string
   status?: 'draft' | 'published'
+  organizationId?: number
   description?: string
   category?: string
   dateDue?: string
@@ -252,6 +256,71 @@ function ensureCategoryExists(category: string | null): string | null {
   return existing.name
 }
 
+function getPreviewUserContext(req: Request): RequestUserContext | null {
+  const authHeader = req.headers.authorization
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
+  if (!token) {
+    return null
+  }
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET) as { sub?: unknown }
+    if (typeof payload.sub !== 'number') {
+      return null
+    }
+
+    req.user = {
+      sub: payload.sub,
+      role: (payload as { role?: 'administrator' | 'team_manager' | 'user' }).role ?? 'user',
+      organizationId: (payload as { organizationId?: number | null }).organizationId,
+      organizationName: (payload as { organizationName?: string | null }).organizationName,
+    }
+
+    return loadRequestUserContext(req)
+  } catch {
+    return null
+  }
+}
+
+function resolveCollectionOrganization(
+  context: RequestUserContext,
+  requestedOrganizationId: number | undefined,
+): { id: number; name: string } {
+  const db = getDb()
+
+  const resolvedId = isAdministrator(context)
+    ? requestedOrganizationId ?? context.organizationId ?? null
+    : context.organizationId
+
+  if (!resolvedId) {
+    throw new Error('An organization assignment is required')
+  }
+
+  const organization = db
+    .prepare('SELECT id, name FROM organizations WHERE id = ? AND is_active = 1')
+    .get(resolvedId) as unknown as { id: number; name: string } | undefined
+
+  if (!organization) {
+    throw new Error('Selected organization does not exist')
+  }
+
+  return organization
+}
+
+function fetchAccessibleCollectionById(
+  id: number,
+  context: RequestUserContext,
+): DbCollection | undefined {
+  const db = getDb()
+  const query = isAdministrator(context)
+    ? `${COL_SELECT} WHERE c.id = ?`
+    : `${COL_SELECT} WHERE c.id = ? AND c.organization_id = ?`
+
+  return db
+    .prepare(query)
+    .get(...(isAdministrator(context) ? [id] : [id, context.organizationId])) as unknown as DbCollection | undefined
+}
+
 // ── Serialisers ───────────────────────────────────────────────
 
 function toApiCollection(
@@ -266,6 +335,8 @@ function toApiCollection(
     status: c.status,
     description: c.description,
     category: c.category,
+    organizationId: c.organization_id,
+    organizationName: c.organization_name ?? null,
     createdBy: c.created_by,
     createdByName: c.creator_name ?? null,
     dateDue: c.date_due,
@@ -311,18 +382,6 @@ function toApiCollection(
 
 function resolveRequestedStatus(body: CollectionBody): 'draft' | 'published' {
   return body.status === 'published' ? 'published' : 'draft'
-}
-
-function hasValidAuthToken(req: Request): boolean {
-  const authHeader = req.headers.authorization
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
-  if (!token) return false
-  try {
-    jwt.verify(token, JWT_SECRET)
-    return true
-  } catch {
-    return false
-  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -746,11 +805,12 @@ function normaliseDbFields(fields: DbField[], colsByField: Map<number, DbTableCo
 }
 
 const COL_SELECT = `
-  SELECT c.*, u.name AS creator_name,
+  SELECT c.*, u.name AS creator_name, o.name AS organization_name,
          cv.version_number AS active_version_number,
          cv.status AS active_version_status
   FROM collections c
   LEFT JOIN users u ON u.id = c.created_by
+  LEFT JOIN organizations o ON o.id = c.organization_id
   LEFT JOIN collection_versions cv ON cv.id = c.active_version_id
 `
 
@@ -792,12 +852,16 @@ const COL_SELECT = `
 router.get('/public/:slug', (req: Request, res: Response) => {
   const db = getDb()
   const previewRequested = req.query.preview === 'true'
-  const isAuthedPreview = previewRequested && hasValidAuthToken(req)
+  const previewUser = previewRequested ? getPreviewUserContext(req) : null
   const c = db
     .prepare(`${COL_SELECT} WHERE c.slug = ?`)
     .get(req.params.slug) as unknown as DbCollection | undefined
 
-  if (!c || (c.status !== 'published' && !isAuthedPreview)) {
+  const canPreviewDraft =
+    !!previewUser &&
+    (isAdministrator(previewUser) || previewUser.organizationId === c?.organization_id)
+
+  if (!c || (c.status !== 'published' && !canPreviewDraft)) {
     res.status(404).json({ error: 'Collection not found' })
     return
   }
@@ -1053,12 +1117,19 @@ router.post('/:id/seed', authenticateToken, (req: Request, res: Response) => {
  *         description: Unauthorized
  */
 router.get('/', authenticateToken, (_req: Request, res: Response) => {
+  const context = loadRequestUserContext(_req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
   const db = getDb()
+  const query = isAdministrator(context)
+    ? `${COL_SELECT} ORDER BY c.created_at DESC`
+    : `${COL_SELECT} WHERE c.organization_id = ? ORDER BY c.created_at DESC`
   const cols = db
-    .prepare(
-      `${COL_SELECT} ORDER BY c.created_at DESC`
-    )
-    .all() as unknown as DbCollection[]
+    .prepare(query)
+    .all(...(isAdministrator(context) ? [] : [context.organizationId])) as unknown as DbCollection[]
 
   const result = cols.map(c => {
     const { n } = db
@@ -1107,6 +1178,12 @@ router.get('/', authenticateToken, (_req: Request, res: Response) => {
  *         description: Unauthorized
  */
 router.post('/', authenticateToken, (req: Request, res: Response) => {
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
   const body = req.body as CollectionBody
   if (!body.title?.trim()) {
     res.status(400).json({ error: 'title is required' })
@@ -1115,10 +1192,12 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
 
   const db = getDb()
   const slug = generateUniqueSlug(db, body.title)
+  let organization: { id: number; name: string }
   let category: string | null
   let editSettings: { allowSubmissionEdits: boolean; submissionEditWindowHours: number | null }
 
   try {
+    organization = resolveCollectionOrganization(context, body.organizationId)
     category = ensureCategoryExists(normalizeCategory(body.category))
     editSettings = resolveSubmissionEditSettings(body)
   } catch (err) {
@@ -1133,9 +1212,9 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
       .prepare(
         `INSERT INTO collections
            (slug, title, status, description, category, created_by, date_due, cover_photo_url,
-            logo_url, instructions, instructions_doc_url, anonymous, allow_submission_edits,
+            logo_url, instructions, instructions_doc_url, organization_id, anonymous, allow_submission_edits,
             submission_edit_window_hours, active_version_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
       )
       .run(
         slug,
@@ -1149,6 +1228,7 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
         body.logoUrl ?? null,
         body.instructions ?? null,
         body.instructionsDocUrl ?? null,
+        organization.id,
         body.anonymous ? 1 : 0,
         editSettings.allowSubmissionEdits ? 1 : 0,
         editSettings.submissionEditWindowHours
@@ -1216,10 +1296,13 @@ router.get('/:id', authenticateToken, (req: Request, res: Response) => {
     return
   }
 
-  const db = getDb()
-  const c = db
-    .prepare(`${COL_SELECT} WHERE c.id = ?`)
-    .get(id) as unknown as DbCollection | undefined
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
+  const c = fetchAccessibleCollectionById(id, context)
 
   if (!c) {
     res.status(404).json({ error: 'Collection not found' })
@@ -1285,16 +1368,24 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
     return
   }
 
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
   const body = req.body as CollectionBody
   if (!body.title?.trim()) {
     res.status(400).json({ error: 'title is required' })
     return
   }
 
+  let organization: { id: number; name: string }
   let category: string | null
   let editSettings: { allowSubmissionEdits: boolean; submissionEditWindowHours: number | null }
 
   try {
+    organization = resolveCollectionOrganization(context, body.organizationId)
     category = ensureCategoryExists(normalizeCategory(body.category))
     editSettings = resolveSubmissionEditSettings(body)
   } catch (err) {
@@ -1303,9 +1394,7 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
   }
 
   const db = getDb()
-  const existingCollection = db
-    .prepare(`${COL_SELECT} WHERE c.id = ?`)
-    .get(id) as unknown as DbCollection | undefined
+  const existingCollection = fetchAccessibleCollectionById(id, context)
 
   if (!existingCollection) {
     res.status(404).json({ error: 'Collection not found' })
@@ -1346,7 +1435,7 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
     db.prepare(
       `UPDATE collections
          SET title = ?, status = ?, description = ?, category = ?, date_due = ?, cover_photo_url = ?,
-           logo_url = ?, instructions = ?, instructions_doc_url = ?, anonymous = ?, allow_submission_edits = ?,
+           logo_url = ?, instructions = ?, instructions_doc_url = ?, organization_id = ?, anonymous = ?, allow_submission_edits = ?,
            submission_edit_window_hours = ?, active_version_id = ?,
            updated_at = datetime('now')
        WHERE id = ?`
@@ -1360,6 +1449,7 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
       body.logoUrl ?? null,
       body.instructions ?? null,
       body.instructionsDocUrl ?? null,
+      organization.id,
       body.anonymous ? 1 : 0,
       editSettings.allowSubmissionEdits ? 1 : 0,
       editSettings.submissionEditWindowHours,
@@ -1398,10 +1488,14 @@ router.get('/:id/versions', authenticateToken, (req: Request, res: Response) => 
     return
   }
 
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
   const db = getDb()
-  const collection = db
-    .prepare('SELECT id, active_version_id FROM collections WHERE id = ?')
-    .get(id) as { id: number; active_version_id: number | null } | undefined
+  const collection = fetchAccessibleCollectionById(id, context)
 
   if (!collection) {
     res.status(404).json({ error: 'Collection not found' })
@@ -1438,10 +1532,14 @@ router.get('/:id/versions/:versionId', authenticateToken, (req: Request, res: Re
     return
   }
 
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
   const db = getDb()
-  const collection = db
-    .prepare(`${COL_SELECT} WHERE c.id = ?`)
-    .get(id) as DbCollection | undefined
+  const collection = fetchAccessibleCollectionById(id, context)
 
   if (!collection) {
     res.status(404).json({ error: 'Collection not found' })
@@ -1468,6 +1566,12 @@ router.post('/:id/versions', authenticateToken, (req: Request, res: Response) =>
     return
   }
 
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
   const body = req.body as CollectionBody
   if (!body.title?.trim()) {
     res.status(400).json({ error: 'title is required' })
@@ -1475,9 +1579,7 @@ router.post('/:id/versions', authenticateToken, (req: Request, res: Response) =>
   }
 
   const db = getDb()
-  const collection = db
-    .prepare(`${COL_SELECT} WHERE c.id = ?`)
-    .get(id) as DbCollection | undefined
+  const collection = fetchAccessibleCollectionById(id, context)
 
   if (!collection) {
     res.status(404).json({ error: 'Collection not found' })
@@ -1544,6 +1646,18 @@ router.post('/:id/versions/:versionId/publish', authenticateToken, (req: Request
   const versionId = parseInt(req.params.versionId, 10)
   if (isNaN(id) || isNaN(versionId)) {
     res.status(400).json({ error: 'Invalid collection or version ID' })
+    return
+  }
+
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
+  const accessibleCollection = fetchAccessibleCollectionById(id, context)
+  if (!accessibleCollection) {
+    res.status(404).json({ error: 'Collection not found' })
     return
   }
 
@@ -1626,10 +1740,14 @@ router.delete('/:id', authenticateToken, (req: Request, res: Response) => {
     return
   }
 
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
   const db = getDb()
-  const exists = db
-    .prepare('SELECT id FROM collections WHERE id = ?')
-    .get(id)
+  const exists = fetchAccessibleCollectionById(id, context)
   if (!exists) {
     res.status(404).json({ error: 'Collection not found' })
     return
@@ -1678,8 +1796,14 @@ router.get('/:id/responses', authenticateToken, (req: Request, res: Response) =>
     return
   }
 
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
   const db = getDb()
-  const exists = db.prepare('SELECT id FROM collections WHERE id = ?').get(id)
+  const exists = fetchAccessibleCollectionById(id, context)
   if (!exists) {
     res.status(404).json({ error: 'Collection not found' })
     return

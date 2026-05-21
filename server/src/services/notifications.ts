@@ -5,6 +5,7 @@ export type NotificationType = 'due_soon' | 'overdue'
 
 interface DbUser {
   id: number
+  organization_id: number | null
 }
 
 interface DbCollectionDue {
@@ -12,6 +13,7 @@ interface DbCollectionDue {
   slug: string
   title: string
   date_due: string
+  organization_id: number
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -84,7 +86,7 @@ export function generateDueDateNotifications(dbArg?: AppDatabase): void {
   const lateOffsetDays = readSettingInt(db, 'notification_late_days', 1)
 
   const users = db
-    .prepare(`SELECT id FROM users WHERE role = 'user'`)
+    .prepare(`SELECT id, organization_id FROM users WHERE role = 'user'`)
     .all() as unknown as DbUser[]
 
   if (users.length === 0) return
@@ -92,6 +94,7 @@ export function generateDueDateNotifications(dbArg?: AppDatabase): void {
   const collections = db
     .prepare(
       `SELECT id, slug, title, date_due
+              , organization_id
        FROM collections
        WHERE status = 'published'
          AND date_due IS NOT NULL
@@ -107,6 +110,9 @@ export function generateDueDateNotifications(dbArg?: AppDatabase): void {
     if (!type) continue
 
     for (const u of users) {
+      if (!u.organization_id || u.organization_id !== c.organization_id) {
+        continue
+      }
       insertNotification(db, u.id, c, type)
     }
   }
