@@ -179,7 +179,7 @@ export default function LoginPage() {
           >
             {EXISTING_USERS.map(u => (
               <option key={u.id} value={String(u.id)}>
-                {u.name} ({ROLE_LABELS[u.role]})
+                {u.name}, {u.organizationName ?? 'Unassigned'} ({ROLE_LABELS[u.role]})
               </option>
             ))}
           </select>

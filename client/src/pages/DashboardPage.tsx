@@ -16,6 +16,7 @@ interface CategoryStat {
 export default function DashboardPage() {
   const navigate = useNavigate()
   const { user } = useAuth()
+  const dashboardTitle = user?.organizationName ? `${user.organizationName} Dashboard` : 'Dashboard'
   const isUser = user?.role === 'user'
   const isPrivileged = user?.role === 'administrator' || user?.role === 'team_manager'
   const [collections, setCollections] = useState<Collection[]>([])
@@ -85,7 +86,7 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Dashboard</h1>
+        <h1 className="text-xl font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{dashboardTitle}</h1>
         <p className="text-sm text-[#64748B] mt-0.5">Collections grouped by category.</p>
       </div>
 
