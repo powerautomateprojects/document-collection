@@ -268,7 +268,7 @@ export default function LoginPage() {
           >
             {filteredUsers.map(u => (
               <option key={u.id} value={String(u.id)}>
-                {u.name} ({ROLE_LABELS[u.role]})
+                {u.name} · {ROLE_LABELS[u.role]} ({u.organizationName ?? 'Unassigned'})
               </option>
             ))}
           </select>
