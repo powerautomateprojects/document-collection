@@ -10,10 +10,12 @@ const ALLOWED_KEYS = new Set([
   'notification_reminder_days',
   'notification_late_days',
   'qr_code_enabled',
+  'submission_confirmation_emails',
   'image_logo_padding_top',
   'image_logo_padding_right',
   'image_logo_padding_bottom',
   'image_logo_padding_left',
+  'copy_answers_disclaimer',
 ])
 
 interface DbSetting {

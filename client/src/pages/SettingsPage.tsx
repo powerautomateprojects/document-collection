@@ -111,6 +111,15 @@ export default function SettingsPage() {
   const [qrCodeSaving, setQrCodeSaving] = useState(false)
   const [qrCodeError, setQrCodeError] = useState<string | null>(null)
   const [qrCodeSaved, setQrCodeSaved] = useState(false)
+  const [confirmationEmailsEnabled, setConfirmationEmailsEnabled] = useState(false)
+  const [confirmationEmailsSaving, setConfirmationEmailsSaving] = useState(false)
+  const [confirmationEmailsError, setConfirmationEmailsError] = useState<string | null>(null)
+  const [confirmationEmailsSaved, setConfirmationEmailsSaved] = useState(false)
+  const [copyAnswersDisclaimer, setCopyAnswersDisclaimer] = useState('')
+  const [copyAnswersDisclaimerDraft, setCopyAnswersDisclaimerDraft] = useState('')
+  const [copyAnswersDisclaimerSaving, setCopyAnswersDisclaimerSaving] = useState(false)
+  const [copyAnswersDisclaimerError, setCopyAnswersDisclaimerError] = useState<string | null>(null)
+  const [copyAnswersDisclaimerSaved, setCopyAnswersDisclaimerSaved] = useState(false)
   const [logoPaddingTop, setLogoPaddingTop] = useState('0')
   const [logoPaddingRight, setLogoPaddingRight] = useState('0')
   const [logoPaddingBottom, setLogoPaddingBottom] = useState('0')
@@ -141,6 +150,12 @@ export default function SettingsPage() {
     getPublicSetting('qr_code_enabled')
       .then(val => setQrCodeEnabled(val === 'true'))
       .catch(() => setQrCodeEnabled(false))
+    getPublicSetting('submission_confirmation_emails')
+      .then(val => setConfirmationEmailsEnabled(val === 'true'))
+      .catch(() => setConfirmationEmailsEnabled(false))
+    getPublicSetting('copy_answers_disclaimer')
+      .then(val => { setCopyAnswersDisclaimer(val); setCopyAnswersDisclaimerDraft(val) })
+      .catch(() => {})
     getPublicSetting('image_logo_padding_top')
       .then(setLogoPaddingTop)
       .catch(() => setLogoPaddingTop('0'))
@@ -362,6 +377,40 @@ export default function SettingsPage() {
       setQrCodeError((err as Error).message)
     } finally {
       setQrCodeSaving(false)
+    }
+  }
+
+  async function handleConfirmationEmailsToggle(nextValue: boolean) {
+    setConfirmationEmailsEnabled(nextValue)
+    setConfirmationEmailsSaving(true)
+    setConfirmationEmailsError(null)
+    setConfirmationEmailsSaved(false)
+    try {
+      await updateSetting('submission_confirmation_emails', nextValue ? 'true' : 'false')
+      setConfirmationEmailsSaved(true)
+    } catch (err) {
+      setConfirmationEmailsEnabled(!nextValue)
+      setConfirmationEmailsError((err as Error).message)
+    } finally {
+      setConfirmationEmailsSaving(false)
+    }
+  }
+
+  async function handleSaveCopyAnswersDisclaimer() {
+    const next = copyAnswersDisclaimerDraft.trim()
+    if (!next) return
+    setCopyAnswersDisclaimerSaving(true)
+    setCopyAnswersDisclaimerError(null)
+    setCopyAnswersDisclaimerSaved(false)
+    try {
+      await updateSetting('copy_answers_disclaimer', next)
+      setCopyAnswersDisclaimer(next)
+      setCopyAnswersDisclaimerDraft(next)
+      setCopyAnswersDisclaimerSaved(true)
+    } catch (err) {
+      setCopyAnswersDisclaimerError((err as Error).message)
+    } finally {
+      setCopyAnswersDisclaimerSaving(false)
     }
   }
 
@@ -872,6 +921,72 @@ export default function SettingsPage() {
 
         {notificationsExpanded && (
           <div className="border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-5">
+
+            {/* Confirmation emails toggle */}
+            <div>
+              <p className="text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">
+                Confirmation Emails
+              </p>
+              <label className="flex items-center justify-between gap-4 rounded-lg border border-[#E2E8F0] dark:border-[#334155] px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9]">Send confirmation email to respondents</p>
+                  <p className="text-xs text-[#64748B] mt-1">
+                    When enabled, respondents receive an email receipt after submitting a non-anonymous collection.
+                    Requires SMTP to be configured.
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={confirmationEmailsEnabled}
+                  onChange={e => { void handleConfirmationEmailsToggle(e.target.checked) }}
+                  disabled={confirmationEmailsSaving}
+                  className="h-4 w-4 accent-[#2563EB] shrink-0"
+                />
+              </label>
+              {confirmationEmailsError && (
+                <p className="text-sm text-red-500 mt-2">{confirmationEmailsError}</p>
+              )}
+              {confirmationEmailsSaved && (
+                <p className="text-sm text-green-600 dark:text-green-400 mt-2">Saved!</p>
+              )}
+            </div>
+
+            {/* Copy-of-answers disclaimer */}
+            <div>
+              <p className="text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">
+                Copy of Answers Disclaimer
+              </p>
+              <p className="text-xs text-[#64748B] mb-2">
+                This text is shown to respondents below the "Send me a copy of my answers" email field.
+              </p>
+              <textarea
+                rows={3}
+                value={copyAnswersDisclaimerDraft}
+                onChange={e => { setCopyAnswersDisclaimerDraft(e.target.value); setCopyAnswersDisclaimerSaved(false) }}
+                className={`${INPUT} resize-y`}
+                placeholder="For privacy your email will not be saved by the system. It will only be used for this purpose."
+              />
+              {copyAnswersDisclaimerError && (
+                <p className="text-sm text-red-500 mt-2">{copyAnswersDisclaimerError}</p>
+              )}
+              <div className="flex items-center gap-3 mt-2">
+                <button
+                  type="button"
+                  disabled={copyAnswersDisclaimerSaving || copyAnswersDisclaimerDraft.trim() === copyAnswersDisclaimer}
+                  onClick={() => { void handleSaveCopyAnswersDisclaimer() }}
+                  className="inline-flex items-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+                >
+                  <Save size={14} />
+                  {copyAnswersDisclaimerSaving ? 'Saving…' : 'Save Disclaimer'}
+                </button>
+                {copyAnswersDisclaimerSaved && (
+                  <span className="text-sm text-green-600 dark:text-green-400">Saved!</span>
+                )}
+              </div>
+            </div>
+
+            <hr className="border-[#E2E8F0] dark:border-[#334155]" />
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">

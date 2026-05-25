@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken'
 import { getDb } from '../database/db'
 import { authenticateToken, JWT_SECRET } from '../middleware/auth'
 import { loadRequestUserContext, isAdministrator, type RequestUserContext } from '../middleware/organizationAccess'
+import { sendNotificationEmail, isEmailDeliveryConfigured } from '../services/notificationEmail'
 
 const router = Router()
 
@@ -955,6 +956,7 @@ router.post('/public/:slug/responses', (req: Request, res: Response) => {
   const body = req.body as {
     respondentName?: string
     respondentEmail?: string
+    copyEmail?: string
     values?: { fieldId: number; value: string }[]
   }
 
@@ -1005,6 +1007,84 @@ router.post('/public/:slug/responses', (req: Request, res: Response) => {
     }
 
     db.exec('COMMIT')
+
+    // Send confirmation email if the feature is enabled and the respondent provided an email
+    const respondentEmail = body.respondentEmail?.trim()
+    if (respondentEmail && isEmailDeliveryConfigured()) {
+      const settingRow = db
+        .prepare(`SELECT value FROM app_settings WHERE key = 'submission_confirmation_emails'`)
+        .get() as { value: string } | undefined
+      if (settingRow?.value === 'true') {
+        void sendNotificationEmail({
+          to: respondentEmail,
+          subject: `Submission received – ${col.title}`,
+          text: [
+            `Hi ${body.respondentName?.trim() ?? 'there'},`,
+            '',
+            `Thank you for your submission to "${col.title}". We have received your response.`,
+            '',
+            'If you have any questions, please contact the collection administrator.',
+          ].join('\n'),
+        }).catch(err => console.error('[collections] confirmation email error:', err))
+      }
+    }
+
+    // Send copy-of-answers email if the respondent requested one
+    const copyEmail = body.copyEmail?.trim()
+    if (copyEmail && isEmailDeliveryConfigured()) {
+      try {
+        const [fields] = fetchFields(col.id, col.active_version_id)
+        const fieldMap = new Map(fields.map(f => [f.id, f]))
+
+        const answerLines: string[] = []
+        for (const val of body.values ?? []) {
+          const field = fieldMap.get(val.fieldId)
+          if (!field) continue
+          // Skip non-input field types
+          if (field.type === 'comment') continue
+          let displayValue = val.value ?? ''
+          // Decode multiple_choice JSON arrays
+          if (field.type === 'multiple_choice') {
+            try {
+              const arr = JSON.parse(displayValue) as string[]
+              displayValue = Array.isArray(arr)
+                ? arr
+                    .map(item =>
+                      item.startsWith('__DCP_OTHER__::') ? item.slice('__DCP_OTHER__::'.length) : item
+                    )
+                    .join(', ')
+                : displayValue
+            } catch { /* use raw */ }
+          } else if (displayValue.startsWith('__DCP_OTHER__::')) {
+            displayValue = displayValue.slice('__DCP_OTHER__::'.length)
+          }
+          if (!displayValue.trim()) continue
+          answerLines.push(`${field.label}\n${displayValue}`)
+        }
+
+        const disclaimerRow = db
+          .prepare(`SELECT value FROM app_settings WHERE key = 'copy_answers_disclaimer'`)
+          .get() as { value: string } | undefined
+        const disclaimer =
+          disclaimerRow?.value?.trim() ||
+          'For privacy your email will not be saved by the system. It will only be used for this purpose.'
+
+        void sendNotificationEmail({
+          to: copyEmail,
+          subject: `Your answers – ${col.title}`,
+          text: [
+            `Here are your submitted answers for "${col.title}":`,
+            '',
+            ...answerLines.flatMap(line => [line, '']),
+            '---',
+            disclaimer,
+          ].join('\n'),
+        }).catch(err => console.error('[collections] copy-of-answers email error:', err))
+      } catch (err) {
+        console.error('[collections] copy-of-answers email build error:', err)
+      }
+    }
+
     res.status(201).json({ id: responseId, submitted: true })
   } catch (err) {
     db.exec('ROLLBACK')

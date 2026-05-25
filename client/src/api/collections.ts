@@ -133,6 +133,7 @@ export async function submitResponse(
   payload: {
     respondentName?: string
     respondentEmail?: string
+    copyEmail?: string
     values: { fieldId: number; value: string }[]
   }
 ): Promise<{ id: number; submitted: boolean }> {
