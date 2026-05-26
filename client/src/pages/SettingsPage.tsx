@@ -177,6 +177,18 @@ export default function SettingsPage() {
       .finally(() => setLoading(false))
   }, [])
 
+  // For global admins: track which org's categories are being managed
+  const [categoriesOrgId, setCategoriesOrgId] = useState<number | null>(null)
+  const isGlobalAdmin = user?.organizationId == null && user?.role === 'administrator'
+
+  useEffect(() => {
+    if (!isGlobalAdmin) return
+    const targetOrgId = categoriesOrgId ?? undefined
+    listCategories(targetOrgId)
+      .then(setCategories)
+      .catch(err => setError((err as Error).message))
+  }, [isGlobalAdmin, categoriesOrgId])
+
   useEffect(() => {
     if (user?.role === 'administrator') {
       loadOrganizations()
@@ -501,11 +513,12 @@ export default function SettingsPage() {
   async function handleCreateCategory() {
     const name = newCategoryName.trim()
     if (!name) return
+    if (isGlobalAdmin && categoriesOrgId == null) return
 
     setSaving(true)
     setError(null)
     try {
-      const created = await createCategory(name)
+      const created = await createCategory(name, isGlobalAdmin ? (categoriesOrgId ?? undefined) : undefined)
       setCategories(prev => [...prev, created])
       setNewCategoryName('')
     } catch (err) {
@@ -605,6 +618,32 @@ export default function SettingsPage() {
 
         {categoriesExpanded && (
           <div className="border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-5">
+
+            {/* Global admin: org selector */}
+            {isGlobalAdmin && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium text-[#475569] dark:text-[#CBD5E1]">
+                  Managing categories for
+                </label>
+                <select
+                  value={categoriesOrgId ?? ''}
+                  onChange={e => {
+                    const val = e.target.value
+                    setCategoriesOrgId(val === '' ? null : parseInt(val, 10))
+                  }}
+                  className="w-full sm:w-72 rounded-md border border-[#CBD5E1] dark:border-[#334155] bg-white dark:bg-[#0F172A] text-sm text-[#1E293B] dark:text-[#F1F5F9] px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+                >
+                  <option value="">All organizations (read-only)</option>
+                  {organizations.map(org => (
+                    <option key={org.id} value={org.id}>{org.name}</option>
+                  ))}
+                </select>
+                {categoriesOrgId == null && (
+                  <p className="text-xs text-[#94A3B8]">Select an organization to add or edit categories.</p>
+                )}
+              </div>
+            )}
+
             <div className="flex flex-wrap gap-2">
               {categories.map(category => {
                 const colors = getCategoryColorClasses(category.name)
@@ -615,34 +654,42 @@ export default function SettingsPage() {
                   >
                     <Tag size={12} />
                     {category.name}
+                    {isGlobalAdmin && categoriesOrgId == null && category.organizationName && (
+                      <span className="opacity-60 font-normal">({category.organizationName})</span>
+                    )}
                   </span>
                 )
               })}
             </div>
 
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <input
-                type="text"
-                value={newCategoryName}
-                onChange={e => setNewCategoryName(e.target.value)}
-                placeholder="Add a new category"
-                className={INPUT}
-              />
-              <button
-                type="button"
-                onClick={handleCreateCategory}
-                disabled={saving || !newCategoryName.trim()}
-                className="inline-flex items-center justify-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
-              >
-                <Plus size={14} />
-                Add Category
-              </button>
-            </div>
+            {/* Add category — hidden for global admin unless an org is selected */}
+            {(!isGlobalAdmin || categoriesOrgId != null) && (
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <input
+                  type="text"
+                  value={newCategoryName}
+                  onChange={e => setNewCategoryName(e.target.value)}
+                  placeholder="Add a new category"
+                  className={INPUT}
+                />
+                <button
+                  type="button"
+                  onClick={handleCreateCategory}
+                  disabled={saving || !newCategoryName.trim()}
+                  className="inline-flex items-center justify-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+                >
+                  <Plus size={14} />
+                  Add Category
+                </button>
+              </div>
+            )}
 
             <div className="space-y-3">
               {categories.map(category => {
                 const isEditing = editingId === category.id
                 const colors = getCategoryColorClasses(category.name)
+                // Org-scoped admins can only edit; global admin in all-orgs view = read-only
+                const canEdit = !isGlobalAdmin || categoriesOrgId != null
                 return (
                   <div
                     key={category.id}
@@ -662,10 +709,14 @@ export default function SettingsPage() {
                             <Tag size={12} />
                             {category.name}
                           </span>
+                          {isGlobalAdmin && categoriesOrgId == null && category.organizationName && (
+                            <span className="text-xs text-[#94A3B8]">{category.organizationName}</span>
+                          )}
                         </div>
                       )}
                     </div>
 
+                    {canEdit && (
                     <div className="flex items-center gap-2">
                       {isEditing ? (
                         <>
@@ -716,6 +767,7 @@ export default function SettingsPage() {
                         Delete
                       </button>
                     </div>
+                    )}
                   </div>
                 )
               })}

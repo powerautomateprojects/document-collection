@@ -28,10 +28,12 @@ export function createSchema(db: AppDatabase): void {
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS categories (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      name       TEXT    NOT NULL UNIQUE COLLATE NOCASE,
-      sort_order INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      name            TEXT    NOT NULL,
+      sort_order      INTEGER NOT NULL DEFAULT 0,
+      organization_id INTEGER REFERENCES organizations(id),
+      created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(name, organization_id)
     );
   `)
 
@@ -268,14 +270,18 @@ export function seedData(db: AppDatabase): void {
     'HR',
     'Operations',
   ]
+  const firstOrgId = (db
+    .prepare('SELECT MIN(id) AS id FROM organizations')
+    .get() as unknown as { id: number | null })?.id ?? null
+
   const insertCategory = db.prepare(
-    'INSERT OR IGNORE INTO categories (name, sort_order) VALUES (?, ?)'
+    'INSERT OR IGNORE INTO categories (name, sort_order, organization_id) VALUES (?, ?, ?)'
   )
 
   db.exec('BEGIN')
   try {
     categories.forEach((name, index) => {
-      insertCategory.run(name, index)
+      insertCategory.run(name, index, firstOrgId)
     })
     db.exec('COMMIT')
   } catch (err) {

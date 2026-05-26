@@ -15,16 +15,19 @@ async function handleResponse<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export async function listCategories(): Promise<Category[]> {
-  const res = await fetch('/api/categories', { headers: authHeaders() })
+export async function listCategories(organizationId?: number): Promise<Category[]> {
+  const url = organizationId != null
+    ? `/api/categories?organizationId=${organizationId}`
+    : '/api/categories'
+  const res = await fetch(url, { headers: authHeaders() })
   return handleResponse<Category[]>(res)
 }
 
-export async function createCategory(name: string): Promise<Category> {
+export async function createCategory(name: string, organizationId?: number): Promise<Category> {
   const res = await fetch('/api/categories', {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, organizationId }),
   })
   return handleResponse<Category>(res)
 }

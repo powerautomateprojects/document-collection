@@ -127,6 +127,8 @@ export interface Category {
   id: number
   name: string
   sortOrder: number
+  organizationId: number | null
+  organizationName: string | null
 }
 
 export interface AppNotification {

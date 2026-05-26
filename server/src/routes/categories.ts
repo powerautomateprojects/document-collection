@@ -8,10 +8,13 @@ interface DbCategory {
   id: number
   name: string
   sort_order: number
+  organization_id: number | null
+  organization_name?: string | null
 }
 
 interface CategoryBody {
   name?: string
+  organizationId?: number
 }
 
 function requireAdministrator(req: Request, res: Response): boolean {
@@ -26,27 +29,35 @@ function normalizeName(name: string | undefined): string {
   return (name ?? '').trim()
 }
 
-function listCategories() {
-  const db = getDb()
-  const rows = db
-    .prepare('SELECT id, name, sort_order FROM categories ORDER BY sort_order, name COLLATE NOCASE')
-    .all() as unknown as DbCategory[]
+/** true if this admin has no org assigned — can manage all orgs */
+function isGlobalAdmin(req: Request): boolean {
+  return req.user?.role === 'administrator' && (req.user.organizationId == null)
+}
 
-  return rows.map(row => ({
+function toResponse(row: DbCategory) {
+  return {
     id: row.id,
     name: row.name,
     sortOrder: row.sort_order,
-  }))
+    organizationId: row.organization_id,
+    organizationName: row.organization_name ?? null,
+  }
 }
 
 /**
  * @swagger
  * /api/categories:
  *   get:
- *     summary: List all categories
+ *     summary: List categories (scoped to the caller's organization; global admins see all or filter by ?organizationId)
  *     tags: [Categories]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: organizationId
+ *         schema:
+ *           type: integer
+ *         description: Filter by organization (global admin only)
  *     responses:
  *       200:
  *         description: Array of categories
@@ -59,8 +70,46 @@ function listCategories() {
  *       401:
  *         description: Unauthorized
  */
-router.get('/', authenticateToken, (_req: Request, res: Response) => {
-  res.json(listCategories())
+router.get('/', authenticateToken, (req: Request, res: Response) => {
+  const db = getDb()
+  const global = isGlobalAdmin(req)
+  const userOrgId = req.user?.organizationId ?? null
+
+  let orgFilter: number | null = null
+  if (global) {
+    const q = req.query.organizationId
+    const parsed = q != null ? parseInt(q as string, 10) : NaN
+    orgFilter = Number.isFinite(parsed) ? parsed : null
+  } else {
+    orgFilter = userOrgId
+  }
+
+  let rows: DbCategory[]
+  if (global && orgFilter === null) {
+    // Global admin with no filter — return all categories across all orgs
+    rows = db
+      .prepare(`
+        SELECT c.id, c.name, c.sort_order, c.organization_id, o.name AS organization_name
+        FROM categories c
+        LEFT JOIN organizations o ON o.id = c.organization_id
+        ORDER BY o.name COLLATE NOCASE, c.sort_order, c.name COLLATE NOCASE
+      `)
+      .all() as unknown as DbCategory[]
+  } else if (orgFilter !== null) {
+    rows = db
+      .prepare(`
+        SELECT c.id, c.name, c.sort_order, c.organization_id, o.name AS organization_name
+        FROM categories c
+        LEFT JOIN organizations o ON o.id = c.organization_id
+        WHERE c.organization_id = ?
+        ORDER BY c.sort_order, c.name COLLATE NOCASE
+      `)
+      .all(orgFilter) as unknown as DbCategory[]
+  } else {
+    rows = []
+  }
+
+  res.json(rows.map(toResponse))
 })
 
 /**
@@ -82,29 +131,20 @@ router.get('/', authenticateToken, (_req: Request, res: Response) => {
  *               name:
  *                 type: string
  *                 example: Finance
+ *               organizationId:
+ *                 type: integer
+ *                 description: Required for global admins; ignored for org-scoped admins
  *     responses:
  *       201:
  *         description: Category created
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Category'
  *       400:
  *         description: Validation error
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
  *       401:
  *         description: Unauthorized
  *       403:
  *         description: Administrator access required
  *       409:
- *         description: Category already exists
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
+ *         description: Category already exists in this organization
  */
 router.post('/', authenticateToken, (req: Request, res: Response) => {
   if (!requireAdministrator(req, res)) return
@@ -115,27 +155,51 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
     return
   }
 
+  const global = isGlobalAdmin(req)
+  let targetOrgId: number | null = null
+
+  if (global) {
+    const bodyOrgId = (req.body as CategoryBody).organizationId
+    if (!bodyOrgId || !Number.isInteger(bodyOrgId)) {
+      res.status(400).json({ error: 'organizationId is required for global administrators' })
+      return
+    }
+    targetOrgId = bodyOrgId
+  } else {
+    targetOrgId = req.user?.organizationId ?? null
+    if (targetOrgId == null) {
+      res.status(400).json({ error: 'Your account has no organization assigned' })
+      return
+    }
+  }
+
   const db = getDb()
   const duplicate = db
-    .prepare('SELECT id FROM categories WHERE lower(name) = lower(?)')
-    .get(name) as unknown as { id: number } | undefined
+    .prepare('SELECT id FROM categories WHERE lower(name) = lower(?) AND organization_id = ?')
+    .get(name, targetOrgId) as unknown as { id: number } | undefined
   if (duplicate) {
-    res.status(409).json({ error: 'Category already exists' })
+    res.status(409).json({ error: 'Category already exists in this organization' })
     return
   }
 
-  const nextSortOrder = db
-    .prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSortOrder FROM categories')
-    .get() as unknown as { nextSortOrder: number }
+  const nextSortOrder = (db
+    .prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM categories WHERE organization_id = ?')
+    .get(targetOrgId) as unknown as { n: number }).n
 
   const result = db
-    .prepare('INSERT INTO categories (name, sort_order) VALUES (?, ?)')
-    .run(name, nextSortOrder.nextSortOrder)
+    .prepare('INSERT INTO categories (name, sort_order, organization_id) VALUES (?, ?, ?)')
+    .run(name, nextSortOrder, targetOrgId)
+
+  const orgName = (db
+    .prepare('SELECT name FROM organizations WHERE id = ?')
+    .get(targetOrgId) as unknown as { name: string } | undefined)?.name ?? null
 
   res.status(201).json({
     id: result.lastInsertRowid,
     name,
-    sortOrder: nextSortOrder.nextSortOrder,
+    sortOrder: nextSortOrder,
+    organizationId: targetOrgId,
+    organizationName: orgName,
   })
 })
 
@@ -144,7 +208,7 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
  * /api/categories/{id}:
  *   put:
  *     summary: Rename a category (admin only)
- *     description: Also updates the category field on any collections using the old name.
+ *     description: Also updates the category field on collections within the same organization.
  *     tags: [Categories]
  *     security:
  *       - bearerAuth: []
@@ -164,20 +228,15 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
  *             properties:
  *               name:
  *                 type: string
- *                 example: Operations
  *     responses:
  *       200:
  *         description: Updated category
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Category'
  *       400:
  *         description: Validation error
  *       401:
  *         description: Unauthorized
  *       403:
- *         description: Administrator access required
+ *         description: Administrator access required / not your organization's category
  *       404:
  *         description: Category not found
  *       409:
@@ -200,32 +259,44 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
 
   const db = getDb()
   const existing = db
-    .prepare('SELECT id, name, sort_order FROM categories WHERE id = ?')
+    .prepare('SELECT id, name, sort_order, organization_id FROM categories WHERE id = ?')
     .get(id) as unknown as DbCategory | undefined
   if (!existing) {
     res.status(404).json({ error: 'Category not found' })
     return
   }
 
+  // Org-scoped admins can only edit their own org's categories
+  if (!isGlobalAdmin(req) && existing.organization_id !== (req.user?.organizationId ?? null)) {
+    res.status(403).json({ error: 'You can only edit your own organization\'s categories' })
+    return
+  }
+
   const duplicate = db
-    .prepare('SELECT id FROM categories WHERE lower(name) = lower(?) AND id <> ?')
-    .get(name, id) as unknown as { id: number } | undefined
+    .prepare('SELECT id FROM categories WHERE lower(name) = lower(?) AND organization_id = ? AND id <> ?')
+    .get(name, existing.organization_id, id) as unknown as { id: number } | undefined
   if (duplicate) {
-    res.status(409).json({ error: 'Category already exists' })
+    res.status(409).json({ error: 'Category already exists in this organization' })
     return
   }
 
   db.exec('BEGIN')
   try {
     db.prepare('UPDATE categories SET name = ? WHERE id = ?').run(name, id)
-    db.prepare('UPDATE collections SET category = ? WHERE category = ?').run(name, existing.name)
+    // Only update collections within the same organization
+    db.prepare('UPDATE collections SET category = ? WHERE category = ? AND organization_id = ?')
+      .run(name, existing.name, existing.organization_id)
     db.exec('COMMIT')
   } catch (err) {
     db.exec('ROLLBACK')
     throw err
   }
 
-  res.json({ id, name, sortOrder: existing.sort_order })
+  const orgName = existing.organization_id
+    ? (db.prepare('SELECT name FROM organizations WHERE id = ?').get(existing.organization_id) as unknown as { name: string } | undefined)?.name ?? null
+    : null
+
+  res.json({ id, name, sortOrder: existing.sort_order, organizationId: existing.organization_id, organizationName: orgName })
 })
 
 /**
@@ -233,7 +304,7 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
  * /api/categories/{id}:
  *   delete:
  *     summary: Delete a category (admin only)
- *     description: Fails if any collections are using this category.
+ *     description: Fails if any collections in this organization are using the category.
  *     tags: [Categories]
  *     security:
  *       - bearerAuth: []
@@ -249,15 +320,11 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
  *       401:
  *         description: Unauthorized
  *       403:
- *         description: Administrator access required
+ *         description: Administrator access required / not your organization's category
  *       404:
  *         description: Category not found
  *       409:
  *         description: Category is in use by one or more collections
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
  */
 router.delete('/:id', authenticateToken, (req: Request, res: Response) => {
   if (!requireAdministrator(req, res)) return
@@ -270,16 +337,22 @@ router.delete('/:id', authenticateToken, (req: Request, res: Response) => {
 
   const db = getDb()
   const existing = db
-    .prepare('SELECT id, name FROM categories WHERE id = ?')
-    .get(id) as unknown as { id: number; name: string } | undefined
+    .prepare('SELECT id, name, organization_id FROM categories WHERE id = ?')
+    .get(id) as unknown as { id: number; name: string; organization_id: number | null } | undefined
   if (!existing) {
     res.status(404).json({ error: 'Category not found' })
     return
   }
 
+  // Org-scoped admins can only delete their own org's categories
+  if (!isGlobalAdmin(req) && existing.organization_id !== (req.user?.organizationId ?? null)) {
+    res.status(403).json({ error: 'You can only delete your own organization\'s categories' })
+    return
+  }
+
   const usage = db
-    .prepare('SELECT COUNT(*) AS n FROM collections WHERE category = ?')
-    .get(existing.name) as unknown as { n: number }
+    .prepare('SELECT COUNT(*) AS n FROM collections WHERE category = ? AND organization_id = ?')
+    .get(existing.name, existing.organization_id) as unknown as { n: number }
   if (usage.n > 0) {
     res.status(409).json({ error: 'Category is in use by one or more collections' })
     return

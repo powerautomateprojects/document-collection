@@ -785,4 +785,63 @@ function runMigrations(db: AppDatabase): void {
       throw err
     }
   }
+
+  // ── Categories: add organization_id and enforce per-org uniqueness ──────────
+  const existingCategoryCols = db
+    .prepare(`PRAGMA table_info(categories)`)
+    .all() as unknown as { name: string }[]
+  const categoryColNames = new Set(existingCategoryCols.map(c => c.name))
+
+  if (!categoryColNames.has('organization_id')) {
+    db.exec(`ALTER TABLE categories ADD COLUMN organization_id INTEGER REFERENCES organizations(id)`)
+    db.exec(`UPDATE categories SET organization_id = (SELECT MIN(id) FROM organizations) WHERE organization_id IS NULL`)
+    console.log('[db] Migration: added categories.organization_id and backfilled to first org')
+  }
+
+  // Rebuild categories table if it still has the old global UNIQUE constraint on name
+  const categoriesSqlRow = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='categories'`)
+    .get() as unknown as { sql: string } | undefined
+  if (categoriesSqlRow?.sql && !categoriesSqlRow.sql.includes('UNIQUE(name, organization_id)')) {
+    db.exec('BEGIN')
+    try {
+      db.exec('ALTER TABLE categories RENAME TO categories_old')
+      db.exec(`
+        CREATE TABLE categories (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          name            TEXT    NOT NULL,
+          sort_order      INTEGER NOT NULL DEFAULT 0,
+          organization_id INTEGER REFERENCES organizations(id),
+          created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(name, organization_id)
+        )
+      `)
+      db.exec(`
+        INSERT OR IGNORE INTO categories (id, name, sort_order, organization_id, created_at)
+        SELECT id, name, sort_order, organization_id, created_at FROM categories_old
+      `)
+      db.exec('DROP TABLE categories_old')
+      db.exec('COMMIT')
+      console.log('[db] Migration: rebuilt categories table with per-org unique constraint')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  // Seed "General" for any organization that has no categories
+  const orgsWithoutCategories = db
+    .prepare(`
+      SELECT o.id FROM organizations o
+      WHERE NOT EXISTS (SELECT 1 FROM categories c WHERE c.organization_id = o.id)
+    `)
+    .all() as unknown as { id: number }[]
+  for (const org of orgsWithoutCategories) {
+    const nextSortOrder = (db
+      .prepare(`SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM categories WHERE organization_id = ?`)
+      .get(org.id) as unknown as { n: number }).n
+    db.prepare(`INSERT OR IGNORE INTO categories (name, sort_order, organization_id) VALUES ('General', ?, ?)`)
+      .run(nextSortOrder, org.id)
+    console.log(`[db] Seeded default "General" category for organization ${org.id}`)
+  }
 }
