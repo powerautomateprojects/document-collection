@@ -5,7 +5,7 @@ const JWT_SECRET = process.env.JWT_SECRET ?? 'dcp-dev-secret-change-in-productio
 
 export interface JwtPayload {
   sub: number
-  role: 'administrator' | 'team_manager' | 'user'
+  role: 'super_admin' | 'administrator' | 'team_manager' | 'user'
   organizationId?: number | null
   organizationName?: string | null
 }

@@ -37,6 +37,7 @@ const FALLBACK_USERS: User[] = [
 ]
 
 const ROLE_LABELS: Record<UserRole, string> = {
+  super_admin: 'SUPER ADMIN',
   administrator: 'ADMINISTRATOR',
   team_manager: 'TEAM MANAGER',
   user: 'USER',

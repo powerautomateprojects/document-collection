@@ -9,7 +9,7 @@ interface DbUser {
   id: number
   name: string
   email: string
-  role: 'administrator' | 'team_manager' | 'user'
+  role: 'super_admin' | 'administrator' | 'team_manager' | 'user'
   organization: string | null
   organization_id: number | null
   organization_name?: string | null
@@ -45,21 +45,33 @@ function toApiUser(u: DbUser) {
  */
 router.get('/', authenticateToken, (_req: Request, res: Response) => {
   const currentUser = loadRequestUserContext(_req)
-  if (!currentUser || currentUser.role !== 'administrator') {
+  if (!currentUser || (currentUser.role !== 'administrator' && currentUser.role !== 'super_admin')) {
     res.status(403).json({ error: 'Administrator access required' })
     return
   }
 
   const db = getDb()
-  const users = db
-    .prepare(
-      `SELECT u.id, u.name, u.email, u.role, u.organization, u.organization_id,
-              o.name AS organization_name, u.created_at
-       FROM users u
-       LEFT JOIN organizations o ON o.id = u.organization_id
-       ORDER BY u.id`
-    )
-    .all() as unknown as DbUser[]
+  const isSuperAdmin = currentUser.role === 'super_admin'
+  const users = isSuperAdmin
+    ? db
+        .prepare(
+          `SELECT u.id, u.name, u.email, u.role, u.organization, u.organization_id,
+                  o.name AS organization_name, u.created_at
+           FROM users u
+           LEFT JOIN organizations o ON o.id = u.organization_id
+           ORDER BY u.id`
+        )
+        .all() as unknown as DbUser[]
+    : db
+        .prepare(
+          `SELECT u.id, u.name, u.email, u.role, u.organization, u.organization_id,
+                  o.name AS organization_name, u.created_at
+           FROM users u
+           LEFT JOIN organizations o ON o.id = u.organization_id
+           WHERE u.organization_id = ?
+           ORDER BY u.id`
+        )
+        .all(currentUser.organizationId) as unknown as DbUser[]
 
   res.json(users.map(toApiUser))
 })
@@ -90,7 +102,7 @@ router.get('/', authenticateToken, (_req: Request, res: Response) => {
  */
 router.get('/:id', authenticateToken, (req: Request, res: Response) => {
   const currentUser = loadRequestUserContext(req)
-  if (!currentUser || currentUser.role !== 'administrator') {
+  if (!currentUser || (currentUser.role !== 'administrator' && currentUser.role !== 'super_admin')) {
     res.status(403).json({ error: 'Administrator access required' })
     return
   }
@@ -122,7 +134,7 @@ router.get('/:id', authenticateToken, (req: Request, res: Response) => {
 
 router.post('/', authenticateToken, (req: Request, res: Response) => {
   const currentUser = loadRequestUserContext(req)
-  if (!currentUser || currentUser.role !== 'administrator') {
+  if (!currentUser || (currentUser.role !== 'administrator' && currentUser.role !== 'super_admin')) {
     res.status(403).json({ error: 'Administrator access required' })
     return
   }
@@ -143,13 +155,21 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
     return
   }
 
-  const VALID_ROLES = ['administrator', 'team_manager', 'user'] as const
+  const VALID_ROLES = ['super_admin', 'administrator', 'team_manager', 'user'] as const
   if (typeof role !== 'string' || !(VALID_ROLES as readonly string[]).includes(role)) {
     res.status(400).json({ error: 'Invalid role' })
     return
   }
 
-  if (typeof organizationId !== 'number' || !Number.isInteger(organizationId) || organizationId < 1) {
+  // Org-scoped administrators can only create users within their own org
+  const resolvedOrgId =
+    currentUser.role === 'super_admin'
+      ? (typeof organizationId === 'number' && Number.isInteger(organizationId) && organizationId >= 1
+          ? organizationId
+          : null)
+      : currentUser.organizationId
+
+  if (!resolvedOrgId || !Number.isInteger(resolvedOrgId) || resolvedOrgId < 1) {
     res.status(400).json({ error: 'organizationId is required' })
     return
   }
@@ -166,7 +186,7 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
 
   const organization = db
     .prepare('SELECT id, name FROM organizations WHERE id = ? AND is_active = 1')
-    .get(organizationId) as unknown as { id: number; name: string } | undefined
+    .get(resolvedOrgId) as unknown as { id: number; name: string } | undefined
 
   if (!organization) {
     res.status(400).json({ error: 'Selected organization does not exist' })
@@ -194,7 +214,8 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
 })
 
 router.patch('/:id', authenticateToken, (req: Request, res: Response) => {
-  if (req.user?.role !== 'administrator') {
+  const currentUser = loadRequestUserContext(req)
+  if (!currentUser || (req.user?.role !== 'administrator' && req.user?.role !== 'super_admin')) {
     res.status(403).json({ error: 'Forbidden' })
     return
   }
@@ -221,7 +242,7 @@ router.patch('/:id', authenticateToken, (req: Request, res: Response) => {
     return
   }
 
-  const VALID_ROLES = ['administrator', 'team_manager', 'user'] as const
+  const VALID_ROLES = ['super_admin', 'administrator', 'team_manager', 'user'] as const
   if (typeof role !== 'string' || !(VALID_ROLES as readonly string[]).includes(role)) {
     res.status(400).json({ error: 'Invalid role' })
     return
@@ -229,9 +250,21 @@ router.patch('/:id', authenticateToken, (req: Request, res: Response) => {
 
   const db = getDb()
 
-  const existingUser = db.prepare('SELECT id FROM users WHERE id = ?').get(id) as unknown as { id: number } | undefined
+  const existingUser = db.prepare('SELECT id, organization_id FROM users WHERE id = ?').get(id) as unknown as { id: number; organization_id: number | null } | undefined
   if (!existingUser) {
     res.status(404).json({ error: 'User not found' })
+    return
+  }
+
+  // Org-scoped admins can only edit users in their own org
+  if (currentUser && req.user?.role === 'administrator' && existingUser.organization_id !== currentUser.organizationId) {
+    res.status(403).json({ error: 'You can only edit users within your own organization' })
+    return
+  }
+
+  // Org-scoped admins cannot assign super_admin role
+  if (req.user?.role === 'administrator' && role === 'super_admin') {
+    res.status(403).json({ error: 'You cannot assign the super_admin role' })
     return
   }
 
@@ -251,7 +284,7 @@ router.patch('/:id', authenticateToken, (req: Request, res: Response) => {
 
   const organization = db
     .prepare('SELECT id, name FROM organizations WHERE id = ? AND is_active = 1')
-    .get(organizationId) as unknown as { id: number; name: string } | undefined
+    .get(resolvedOrgId) as unknown as { id: number; name: string } | undefined
 
   if (!organization) {
     res.status(400).json({ error: 'Selected organization does not exist' })
@@ -281,7 +314,8 @@ router.patch('/:id', authenticateToken, (req: Request, res: Response) => {
 })
 
 router.delete('/:id', authenticateToken, (req: Request, res: Response) => {
-  if (req.user?.role !== 'administrator') {
+  const currentUser = loadRequestUserContext(req)
+  if (!currentUser || (req.user?.role !== 'administrator' && req.user?.role !== 'super_admin')) {
     res.status(403).json({ error: 'Forbidden' })
     return
   }
@@ -299,9 +333,15 @@ router.delete('/:id', authenticateToken, (req: Request, res: Response) => {
   }
 
   const db = getDb()
-  const user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(id) as unknown as { id: number; role: string } | undefined
+  const user = db.prepare('SELECT id, role, organization_id FROM users WHERE id = ?').get(id) as unknown as { id: number; role: string; organization_id: number | null } | undefined
   if (!user) {
     res.status(404).json({ error: 'User not found' })
+    return
+  }
+
+  // Org-scoped admins can only delete users in their own org
+  if (req.user?.role === 'administrator' && user.organization_id !== currentUser.organizationId) {
+    res.status(403).json({ error: 'You can only delete users within your own organization' })
     return
   }
 

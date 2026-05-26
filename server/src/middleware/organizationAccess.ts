@@ -3,20 +3,26 @@ import { getDb } from '../database/db'
 
 export interface RequestUserContext {
   id: number
-  role: 'administrator' | 'team_manager' | 'user'
+  role: 'super_admin' | 'administrator' | 'team_manager' | 'user'
   organizationId: number | null
   organizationName: string | null
 }
 
 interface DbUserContext {
   id: number
-  role: 'administrator' | 'team_manager' | 'user'
+  role: 'super_admin' | 'administrator' | 'team_manager' | 'user'
   organization_id: number | null
   organization_name: string | null
 }
 
+/** Returns true only for super_admin — they bypass all org-scoping. */
 export function isAdministrator(context: RequestUserContext): boolean {
-  return context.role === 'administrator'
+  return context.role === 'super_admin'
+}
+
+/** Returns true for both super_admin and administrator. */
+export function isAdminOrSuperAdmin(context: RequestUserContext): boolean {
+  return context.role === 'super_admin' || context.role === 'administrator'
 }
 
 export function loadRequestUserContext(req: Request): RequestUserContext | null {

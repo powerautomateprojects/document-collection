@@ -25,7 +25,9 @@ const INPUT =
   'focus:outline-none focus:ring-2 focus:ring-[#2563EB]'
 
 function getUserRoleBadgeClass(role: AppUser['role']): string {
-  return role === 'administrator'
+  return role === 'super_admin'
+    ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+    : role === 'administrator'
     ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
     : role === 'team_manager'
     ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
@@ -33,6 +35,7 @@ function getUserRoleBadgeClass(role: AppUser['role']): string {
 }
 
 function formatRoleLabel(role: AppUser['role']): string {
+  if (role === 'super_admin') return 'super admin'
   return role === 'team_manager' ? 'team manager' : role
 }
 
@@ -77,7 +80,7 @@ export default function SettingsPage() {
   const [usersLoading, setUsersLoading] = useState(false)
   const [newUserName, setNewUserName] = useState('')
   const [newUserEmail, setNewUserEmail] = useState('')
-  const [newUserRole, setNewUserRole] = useState<'user' | 'team_manager' | 'administrator'>('user')
+  const [newUserRole, setNewUserRole] = useState<'user' | 'team_manager' | 'administrator' | 'super_admin'>('user')
   const [newUserOrganizationId, setNewUserOrganizationId] = useState('')
   const [userCreateSaving, setUserCreateSaving] = useState(false)
   const [userCreateError, setUserCreateError] = useState<string | null>(null)
@@ -86,7 +89,7 @@ export default function SettingsPage() {
   const [editingUserId, setEditingUserId] = useState<number | null>(null)
   const [editingUserName, setEditingUserName] = useState('')
   const [editingUserEmail, setEditingUserEmail] = useState('')
-  const [editingUserRole, setEditingUserRole] = useState<'user' | 'team_manager' | 'administrator'>('user')
+  const [editingUserRole, setEditingUserRole] = useState<'user' | 'team_manager' | 'administrator' | 'super_admin'>('user')
   const [editingUserOrganizationId, setEditingUserOrganizationId] = useState('')
   const [userEditSaving, setUserEditSaving] = useState(false)
   const [userEditError, setUserEditError] = useState<string | null>(null)
@@ -179,7 +182,7 @@ export default function SettingsPage() {
 
   // For global admins: track which org's categories are being managed
   const [categoriesOrgId, setCategoriesOrgId] = useState<number | null>(null)
-  const isGlobalAdmin = user?.organizationId == null && user?.role === 'administrator'
+  const isGlobalAdmin = user?.role === 'super_admin'
 
   useEffect(() => {
     if (!isGlobalAdmin) return
@@ -190,7 +193,7 @@ export default function SettingsPage() {
   }, [isGlobalAdmin, categoriesOrgId])
 
   useEffect(() => {
-    if (user?.role === 'administrator') {
+    if (user?.role === 'administrator' || user?.role === 'super_admin') {
       loadOrganizations()
       loadUsers()
     }
@@ -567,7 +570,7 @@ export default function SettingsPage() {
     return <div className="flex items-center justify-center h-40 text-[#64748B]">Loading settings…</div>
   }
 
-  if (user?.role !== 'administrator') {
+  if (user?.role !== 'administrator' && user?.role !== 'super_admin') {
     return (
       <div className="rounded border border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-800 p-4 text-amber-700 dark:text-amber-300 text-sm">
         Only administrators can manage categories.
@@ -1484,6 +1487,9 @@ export default function SettingsPage() {
                       <option value="user">User</option>
                       <option value="team_manager">Team Manager</option>
                       <option value="administrator">Administrator</option>
+                      {user?.role === 'super_admin' && (
+                        <option value="super_admin">Super Admin</option>
+                      )}
                     </select>
                   </div>
                   <div>
@@ -1598,6 +1604,9 @@ export default function SettingsPage() {
                                   <option value="user">User</option>
                                   <option value="team_manager">Team Manager</option>
                                   <option value="administrator">Administrator</option>
+                                  {user?.role === 'super_admin' && (
+                                    <option value="super_admin">Super Admin</option>
+                                  )}
                                 </select>
                               ) : (
                                 <span className={`inline-block text-[11px] font-medium px-2 py-0.5 rounded-[2px] ${getUserRoleBadgeClass(u.role)}`}>
@@ -1723,6 +1732,9 @@ export default function SettingsPage() {
                                 <option value="user">User</option>
                                 <option value="team_manager">Team Manager</option>
                                 <option value="administrator">Administrator</option>
+                                {user?.role === 'super_admin' && (
+                                  <option value="super_admin">Super Admin</option>
+                                )}
                               </select>
                               <select
                                 value={editingUserOrganizationId}

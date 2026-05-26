@@ -844,4 +844,12 @@ function runMigrations(db: AppDatabase): void {
       .run(nextSortOrder, org.id)
     console.log(`[db] Seeded default "General" category for organization ${org.id}`)
   }
+
+  // ── Promote null-org administrators to super_admin ──────────────────────────
+  const promoted = db
+    .prepare(`UPDATE users SET role = 'super_admin' WHERE role = 'administrator' AND organization_id IS NULL`)
+    .run()
+  if (promoted.changes > 0) {
+    console.log(`[db] Migration: promoted ${promoted.changes} global administrator(s) to super_admin`)
+  }
 }

@@ -21,7 +21,7 @@ interface NavItem {
   icon: LucideIcon
   label: string
   to: string
-  roles?: Array<'administrator' | 'team_manager' | 'user'>
+  roles?: Array<'super_admin' | 'administrator' | 'team_manager' | 'user'>
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -29,7 +29,7 @@ const NAV_ITEMS: NavItem[] = [
   { icon: Database,        label: 'Collections',     to: '/collections'      },
   { icon: FileText,        label: 'Records',         to: '/records'          },
   { icon: BarChart3,       label: 'Reports',         to: '/reports'          },
-  { icon: Sparkles,        label: 'AI Summary',      to: '/ai-summary',      roles: ['administrator'] },
+  { icon: Sparkles,        label: 'AI Summary',      to: '/ai-summary',      roles: ['super_admin', 'administrator'] },
   { icon: Settings,        label: 'Settings',        to: '/settings'         },
 ]
 

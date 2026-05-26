@@ -18,7 +18,7 @@ interface CategoryBody {
 }
 
 function requireAdministrator(req: Request, res: Response): boolean {
-  if (req.user?.role !== 'administrator') {
+  if (req.user?.role !== 'administrator' && req.user?.role !== 'super_admin') {
     res.status(403).json({ error: 'Administrator access required' })
     return false
   }
@@ -31,7 +31,7 @@ function normalizeName(name: string | undefined): string {
 
 /** true if this admin has no org assigned — can manage all orgs */
 function isGlobalAdmin(req: Request): boolean {
-  return req.user?.role === 'administrator' && (req.user.organizationId == null)
+  return req.user?.role === 'super_admin'
 }
 
 function toResponse(row: DbCategory) {

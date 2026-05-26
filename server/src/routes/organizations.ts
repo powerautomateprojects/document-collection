@@ -31,8 +31,8 @@ function toApiOrganization(row: DbOrganization) {
 }
 
 function requireAdministrator(req: Request, res: Response): boolean {
-  if (req.user?.role !== 'administrator') {
-    res.status(403).json({ error: 'Administrator access required' })
+  if (req.user?.role !== 'super_admin') {
+    res.status(403).json({ error: 'Super admin access required' })
     return false
   }
 
