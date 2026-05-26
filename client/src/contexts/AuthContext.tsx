@@ -88,6 +88,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired)
   }, [])
 
+  // Refresh user profile on startup so stored data stays up to date
+  useEffect(() => {
+    if (!initialSession.token) return
+    fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${initialSession.token}` },
+    })
+      .then(res => (res.ok ? (res.json() as Promise<User>) : null))
+      .then(freshUser => {
+        if (freshUser) {
+          setUser(freshUser)
+          localStorage.setItem('dcp-user', JSON.stringify(freshUser))
+        }
+      })
+      .catch(() => { /* silently ignore — stale data is fine */ })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <AuthContext.Provider value={{ user, token, signIn, signOut }}>
       {children}

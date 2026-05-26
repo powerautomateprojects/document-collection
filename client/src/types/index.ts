@@ -7,6 +7,7 @@ export interface User {
   role: UserRole
   organizationId: number | null
   organizationName: string | null
+  organizationSlug: string | null
   organizationDescription?: string | null
   organization?: string
   createdAt: string

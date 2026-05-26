@@ -13,6 +13,7 @@ interface DbUser {
   organization: string | null
   organization_id: number | null
   organization_name?: string | null
+  organization_slug?: string | null
   organization_description?: string | null
   created_at: string
 }
@@ -25,6 +26,7 @@ function toApiUser(u: DbUser) {
     role: u.role,
     organizationId: u.organization_id,
     organizationName: u.organization_name ?? u.organization,
+    organizationSlug: u.organization_slug ?? null,
     organizationDescription: u.organization_description ?? null,
     ...(u.organization ? { organization: u.organization } : {}),
     createdAt: u.created_at,
@@ -58,7 +60,7 @@ router.get('/users', (_req: Request, res: Response) => {
   const db = getDb()
   const users = db
     .prepare(
-      `SELECT u.*, o.name AS organization_name, o.description AS organization_description
+      `SELECT u.*, o.name AS organization_name, o.slug AS organization_slug, o.description AS organization_description
        FROM users u
        LEFT JOIN organizations o ON o.id = u.organization_id
        ORDER BY u.name COLLATE NOCASE ASC, u.id ASC`
@@ -104,7 +106,7 @@ router.post('/login', (req: Request, res: Response) => {
   const db = getDb()
   const user = db
     .prepare(
-      `SELECT u.*, o.name AS organization_name
+      `SELECT u.*, o.name AS organization_name, o.slug AS organization_slug, o.description AS organization_description
        FROM users u
        LEFT JOIN organizations o ON o.id = u.organization_id
        WHERE u.id = ?`
@@ -224,7 +226,7 @@ router.post('/register', authenticateToken, (req: Request, res: Response) => {
   const insertedId = Number(result.lastInsertRowid)
   const newUser = db
     .prepare(
-      `SELECT u.*, o.name AS organization_name
+      `SELECT u.*, o.name AS organization_name, o.slug AS organization_slug
        FROM users u
        LEFT JOIN organizations o ON o.id = u.organization_id
        WHERE u.id = ?`
@@ -234,6 +236,39 @@ router.post('/register', authenticateToken, (req: Request, res: Response) => {
   const token = signUserToken(newUser)
 
   res.status(201).json({ token, user: toApiUser(newUser) })
+})
+
+/**
+ * @swagger
+ * /api/auth/me:
+ *   get:
+ *     summary: Get the currently authenticated user's profile
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Current user object
+ *       401:
+ *         description: Unauthorized
+ */
+router.get('/me', authenticateToken, (req: Request, res: Response) => {
+  const db = getDb()
+  const user = db
+    .prepare(
+      `SELECT u.*, o.name AS organization_name, o.slug AS organization_slug, o.description AS organization_description
+       FROM users u
+       LEFT JOIN organizations o ON o.id = u.organization_id
+       WHERE u.id = ?`
+    )
+    .get(req.user!.sub) as unknown as DbUser | undefined
+
+  if (!user) {
+    res.status(404).json({ error: 'User not found' })
+    return
+  }
+
+  res.json(toApiUser(user))
 })
 
 export default router

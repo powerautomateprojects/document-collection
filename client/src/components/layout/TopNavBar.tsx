@@ -161,7 +161,7 @@ export default function TopNavBar({ onAppIconClick }: TopNavBarProps) {
           </button>
 
           {notificationsOpen && (
-            <div className="absolute right-0 top-full mt-1 w-80 max-w-[calc(100vw-1rem)] bg-white dark:bg-[#0F172A] border border-[#E2E8F0] dark:border-[#1E293B] z-50 rounded-[2px] overflow-hidden">
+            <div className="fixed top-[60px] left-1/2 -translate-x-1/2 sm:absolute sm:top-full sm:left-auto sm:translate-x-0 sm:right-0 sm:mt-1 w-80 max-w-[calc(100vw-1rem)] bg-white dark:bg-[#0F172A] border border-[#E2E8F0] dark:border-[#1E293B] z-50 rounded-[2px] overflow-hidden">
               <div className="px-3 py-2 border-b border-[#E2E8F0] dark:border-[#1E293B] flex items-center justify-between">
                 <p className="text-xs font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Notifications</p>
                 <button
@@ -283,6 +283,13 @@ export default function TopNavBar({ onAppIconClick }: TopNavBarProps) {
                 <p className="text-[9px] tracking-[0.18em] text-[#64748B] dark:text-[#475569] uppercase mt-0.5 font-mono">
                   {ROLE_LABELS[user.role]}
                 </p>
+                {user.organizationName && (
+                  <p className="text-[10px] text-[#94A3B8] dark:text-[#475569] mt-0.5 truncate">
+                    {user.organizationDescription
+                      ? `${user.organizationDescription} (${user.organizationName})`
+                      : user.organizationName}
+                  </p>
+                )}
               </div>
               <button
                 onClick={handleSignOut}
