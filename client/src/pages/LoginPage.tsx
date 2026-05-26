@@ -45,6 +45,7 @@ const ROLE_LABELS: Record<UserRole, string> = {
 
 const DEFAULT_PUBLIC_STATS: PublicSummaryStats = {
   categoryCount: 0,
+  organizationCount: 0,
   collectionCount: 0,
   submissionCount: 0,
 }
@@ -103,12 +104,12 @@ export default function LoginPage() {
     setSelectedUserId(first ? String(first.id) : '')
   }, [selectedOrgId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-fetch stats whenever the selected org changes
+  // Fetch global stats once on mount (not scoped to selected org)
   useEffect(() => {
-    getPublicSummaryStats(selectedOrgId ?? undefined)
+    getPublicSummaryStats()
       .then(setPublicStats)
       .catch(() => { /* keep default counts */ })
-  }, [selectedOrgId])
+  }, [])
 
   useEffect(() => {
     getPublicSetting('login_message')
@@ -200,7 +201,7 @@ export default function LoginPage() {
         {/* Stats */}
         <div className="flex gap-3 mt-10 md:mt-0">
           {[
-            { value: publicStats.categoryCount, label: 'CATEGORIES' },
+            { value: publicStats.organizationCount, label: 'ORGANIZATIONS' },
             { value: publicStats.collectionCount, label: 'COLLECTIONS' },
             { value: publicStats.submissionCount, label: 'SUBMISSIONS' },
           ].map(stat => (

@@ -39,6 +39,7 @@ export interface DashboardStats {
 
 export interface PublicSummaryStats {
   categoryCount: number
+  organizationCount: number
   collectionCount: number
   submissionCount: number
 }
@@ -50,6 +51,18 @@ export async function getStats(): Promise<DashboardStats> {
   return res.json() as Promise<DashboardStats>
 }
 
+export interface TrendData {
+  dates: string[]
+  series: { category: string; data: number[] }[]
+}
+
+export async function getTrend(): Promise<TrendData> {
+  const res = await fetch('/api/stats/trend', { headers: authHeaders() })
+  handleUnauthorizedResponse(res)
+  if (!res.ok) throw new Error('Failed to load trend data')
+  return res.json() as Promise<TrendData>
+}
+
 export async function getPublicSummaryStats(organizationId?: number): Promise<PublicSummaryStats> {
   const url = organizationId
     ? `/api/stats/public-summary?organizationId=${organizationId}`
@@ -57,6 +70,19 @@ export async function getPublicSummaryStats(organizationId?: number): Promise<Pu
   const res = await fetch(url)
   if (!res.ok) throw new Error('Failed to load public summary stats')
   return res.json() as Promise<PublicSummaryStats>
+}
+
+export interface GlobalStats {
+  organizationCount: number
+  collectionCount: number
+  submissionCount: number
+}
+
+export async function getGlobalStats(): Promise<GlobalStats> {
+  const res = await fetch('/api/stats/global', { headers: authHeaders() })
+  handleUnauthorizedResponse(res)
+  if (!res.ok) throw new Error('Failed to load global stats')
+  return res.json() as Promise<GlobalStats>
 }
 
 export async function getReportsData(days: ReportsDatePreset = 30): Promise<ReportsData> {

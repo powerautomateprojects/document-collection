@@ -36,6 +36,10 @@ router.get('/public-summary', (req: Request, res: Response): void => {
           .prepare(`SELECT COUNT(*) AS categoryCount FROM categories`)
           .get() as { categoryCount: number })
 
+    const { organizationCount } = db
+      .prepare(`SELECT COUNT(*) AS organizationCount FROM organizations`)
+      .get() as { organizationCount: number }
+
     const { collectionCount } = orgId
       ? (db
           .prepare(`SELECT COUNT(*) AS collectionCount FROM collections WHERE organization_id = ?`)
@@ -59,9 +63,74 @@ router.get('/public-summary', (req: Request, res: Response): void => {
 
     res.json({
       categoryCount,
+      organizationCount,
       collectionCount,
       submissionCount,
     })
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+/**
+ * GET /api/stats/trend
+ * Returns daily submission counts per category for the last 21 days.
+ * Accessible to administrators and team_managers only.
+ * Categories with zero submissions in the window are omitted.
+ */
+const TREND_DAYS = 21
+
+router.get('/trend', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const role = context?.role
+  if (role !== 'administrator' && role !== 'team_manager') {
+    res.status(403).json({ error: 'Forbidden' })
+    return
+  }
+
+  try {
+    const db = getDb()
+    const scopeParam = !isAdministrator(context!) && context?.organizationId ? [context.organizationId] : []
+    const collectionScopeAnd = !isAdministrator(context!) && context?.organizationId
+      ? 'AND c.organization_id = ?'
+      : !isAdministrator(context!) ? 'AND 1 = 0' : ''
+
+    // Build ordered array of the last TREND_DAYS dates (oldest → today)
+    const dates: string[] = []
+    for (let i = TREND_DAYS - 1; i >= 0; i--) {
+      const d = new Date()
+      d.setUTCDate(d.getUTCDate() - i)
+      dates.push(d.toISOString().slice(0, 10))
+    }
+
+    const rows = db
+      .prepare(
+        `SELECT date(cr.submitted_at) AS date,
+                COALESCE(c.category, 'Uncategorised') AS category,
+                COUNT(*) AS count
+         FROM collection_responses cr
+         JOIN collections c ON c.id = cr.collection_id
+         WHERE cr.submitted_at >= date('now', '-${TREND_DAYS - 1} days') ${collectionScopeAnd}
+         GROUP BY date(cr.submitted_at), COALESCE(c.category, 'Uncategorised')
+         ORDER BY date ASC`
+      )
+      .all(...scopeParam) as { date: string; category: string; count: number }[]
+
+    // Pivot: category → date → count
+    const categoryMap = new Map<string, Map<string, number>>()
+    for (const row of rows) {
+      if (!categoryMap.has(row.category)) categoryMap.set(row.category, new Map())
+      categoryMap.get(row.category)!.set(row.date, row.count)
+    }
+
+    const series = Array.from(categoryMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([category, dateMap]) => ({
+        category,
+        data: dates.map(d => dateMap.get(d) ?? 0),
+      }))
+
+    res.json({ dates, series })
   } catch (err) {
     res.status(500).json({ error: (err as Error).message })
   }
@@ -502,6 +571,33 @@ router.post('/reports/summary-ai', authenticateToken, async (req: Request, res: 
       usedAi,
       aiFailureReason,
     })
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+/**
+ * GET /api/stats/global
+ * Returns cross-org counts for the super_admin dashboard.
+ */
+router.get('/global', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  if (context?.role !== 'super_admin') {
+    res.status(403).json({ error: 'Forbidden' })
+    return
+  }
+  try {
+    const db = getDb()
+    const { organizationCount } = db
+      .prepare(`SELECT COUNT(*) AS organizationCount FROM organizations`)
+      .get() as { organizationCount: number }
+    const { collectionCount } = db
+      .prepare(`SELECT COUNT(*) AS collectionCount FROM collections`)
+      .get() as { collectionCount: number }
+    const { submissionCount } = db
+      .prepare(`SELECT COUNT(*) AS submissionCount FROM collection_responses`)
+      .get() as { submissionCount: number }
+    res.json({ organizationCount, collectionCount, submissionCount })
   } catch (err) {
     res.status(500).json({ error: (err as Error).message })
   }

@@ -51,7 +51,7 @@ export default function App() {
           <Route path="/my-submissions/:responseId" element={<MySubmissionDetailPage />} />
 
           {/* Collections + admin routes: user role redirected to dashboard */}
-          <Route element={<RequireRole allowed={['administrator', 'team_manager']} fallback="/dashboard" />}>
+          <Route element={<RequireRole allowed={['super_admin', 'administrator', 'team_manager']} fallback="/dashboard" />}>
             <Route path="/collections" element={<CollectionsPage />} />
             <Route path="/collections/new" element={<CollectionBuilderPage />} />
             <Route path="/collections/:id/edit" element={<CollectionBuilderPage />} />
@@ -61,7 +61,7 @@ export default function App() {
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
 
-          <Route element={<RequireRole allowed={['administrator']} fallback="/dashboard" />}>
+          <Route element={<RequireRole allowed={['super_admin', 'administrator']} fallback="/dashboard" />}>
             <Route path="/ai-summary" element={<AISummaryPage />} />
           </Route>
         </Route>
