@@ -153,6 +153,33 @@ export default function LoginPage() {
   const [regEmail, setRegEmail] = useState('')
   const [error, setError] = useState<string | null>(null)
 
+  // Email + password login (for invited users)
+  const [pwEmail, setPwEmail] = useState('')
+  const [pwPassword, setPwPassword] = useState('')
+  const [pwSigningIn, setPwSigningIn] = useState(false)
+  const [pwError, setPwError] = useState<string | null>(null)
+
+  const handlePasswordSignIn = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setPwSigningIn(true)
+    setPwError(null)
+    try {
+      const res = await fetch('/api/auth/login-with-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: pwEmail, password: pwPassword }),
+      })
+      const data = await res.json() as { token: string; user: User; error?: string }
+      if (!res.ok) throw new Error(data.error ?? 'Login failed')
+      signIn(data.user, data.token)
+      navigate('/')
+    } catch (err) {
+      setPwError(err instanceof Error ? err.message : 'Login failed')
+    } finally {
+      setPwSigningIn(false)
+    }
+  }
+
   const handleSelectSignIn = async () => {
     setSigningIn(true)
     setError(null)
@@ -285,6 +312,46 @@ export default function LoginPage() {
           >
             {signingIn ? 'Signing in…' : 'Sign In as Selected User'}
           </button>
+
+          {/* Divider */}
+          <div className="border-t border-[#E2E8F0] dark:border-[#1E293B] mb-8" />
+
+          {/* ── Email + Password login ────────────────── */}
+          <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B] dark:text-[#475569] uppercase mb-4">
+            Sign In with Password
+          </p>
+          <form onSubmit={e => void handlePasswordSignIn(e)} className="space-y-3 mb-8">
+            {pwError && (
+              <div className="px-3 py-2.5 border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 text-sm">
+                {pwError}
+              </div>
+            )}
+            <input
+              type="email"
+              placeholder="Email address"
+              value={pwEmail}
+              onChange={e => setPwEmail(e.target.value)}
+              autoComplete="email"
+              required
+              className={INPUT_CLASS}
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={pwPassword}
+              onChange={e => setPwPassword(e.target.value)}
+              autoComplete="current-password"
+              required
+              className={INPUT_CLASS}
+            />
+            <button
+              type="submit"
+              disabled={pwSigningIn || !pwEmail || !pwPassword}
+              className="w-full bg-[#2563EB] text-white font-semibold py-2.5 text-sm tracking-wide rounded-[2px] hover:bg-blue-700 transition-colors disabled:opacity-50"
+            >
+              {pwSigningIn ? 'Signing in…' : 'Sign In'}
+            </button>
+          </form>
 
           {/* Divider */}
           <div className="border-t border-[#E2E8F0] dark:border-[#1E293B] mb-8" />

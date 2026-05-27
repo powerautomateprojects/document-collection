@@ -858,4 +858,27 @@ function runMigrations(db: AppDatabase): void {
   if (promoted.changes > 0) {
     console.log(`[db] Migration: promoted ${promoted.changes} global administrator(s) to super_admin`)
   }
+
+  // ── Invite / password columns on users ──────────────────────────────────────
+  const allUserCols = db
+    .prepare(`PRAGMA table_info(users)`)
+    .all() as unknown as { name: string }[]
+  const userColSet = new Set(allUserCols.map(c => c.name))
+
+  if (!userColSet.has('password_hash')) {
+    db.exec(`ALTER TABLE users ADD COLUMN password_hash TEXT`)
+    console.log('[db] Migration: added users.password_hash')
+  }
+  if (!userColSet.has('must_change_password')) {
+    db.exec(`ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`)
+    console.log('[db] Migration: added users.must_change_password')
+  }
+  if (!userColSet.has('invite_token')) {
+    db.exec(`ALTER TABLE users ADD COLUMN invite_token TEXT`)
+    console.log('[db] Migration: added users.invite_token')
+  }
+  if (!userColSet.has('invite_token_expires_at')) {
+    db.exec(`ALTER TABLE users ADD COLUMN invite_token_expires_at TEXT`)
+    console.log('[db] Migration: added users.invite_token_expires_at')
+  }
 }

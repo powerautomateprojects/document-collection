@@ -15,6 +15,7 @@ import AISummaryPage from './pages/AISummaryPage'
 import NotificationsPage from './pages/NotificationsPage'
 import MySubmissionsPage from './pages/MySubmissionsPage'
 import MySubmissionDetailPage from './pages/MySubmissionDetailPage'
+import AcceptInvitePage from './pages/AcceptInvitePage'
 
 function RequireAuth() {
   const { user } = useAuth()
@@ -40,6 +41,7 @@ export default function App() {
         element={!user ? <LoginPage /> : <Navigate to="/collections" replace />}
       />
       <Route path="/fill/:slug" element={<CollectionFillPage />} />
+      <Route path="/accept-invite" element={<AcceptInvitePage />} />
 
       {/* Protected shell */}
       <Route element={<RequireAuth />}>

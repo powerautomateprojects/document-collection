@@ -67,3 +67,16 @@ export async function deleteUser(id: number): Promise<void> {
     throw new Error(body.error ?? `Request failed: ${res.status}`)
   }
 }
+
+export async function sendInvite(payload: {
+  email: string
+  name: string
+  role?: 'user' | 'team_manager' | 'administrator'
+}): Promise<{ message: string; inviteLink?: string }> {
+  const res = await fetch('/api/invitations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(payload),
+  })
+  return handleResponse<{ message: string; inviteLink?: string }>(res)
+}

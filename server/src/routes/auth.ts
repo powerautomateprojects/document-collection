@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express'
 import jwt from 'jsonwebtoken'
 import { getDb } from '../database/db'
 import { authenticateToken, JWT_SECRET } from '../middleware/auth'
+import { verifyPassword } from './invitations'
 
 const router = Router()
 
@@ -16,6 +17,9 @@ interface DbUser {
   organization_slug?: string | null
   organization_description?: string | null
   created_at: string
+  password_hash?: string | null
+  must_change_password?: number
+  invite_token?: string | null
 }
 
 function toApiUser(u: DbUser) {
@@ -269,6 +273,51 @@ router.get('/me', authenticateToken, (req: Request, res: Response) => {
   }
 
   res.json(toApiUser(user))
+})
+
+/**
+ * POST /api/auth/login-with-password
+ * Sign in using email + password (for invited/registered users).
+ */
+router.post('/login-with-password', (req: Request, res: Response) => {
+  const { email, password } = req.body as { email: unknown; password: unknown }
+
+  if (typeof email !== 'string' || !email.trim() || typeof password !== 'string' || !password) {
+    res.status(400).json({ error: 'email and password are required' })
+    return
+  }
+
+  const db = getDb()
+  const user = db
+    .prepare(
+      `SELECT u.*, o.name AS organization_name, o.slug AS organization_slug, o.description AS organization_description
+       FROM users u
+       LEFT JOIN organizations o ON o.id = u.organization_id
+       WHERE lower(u.email) = lower(?)`
+    )
+    .get(email.trim()) as unknown as DbUser | undefined
+
+  // Generic error to prevent email enumeration
+  const INVALID = 'Invalid email or password'
+
+  if (!user) {
+    res.status(401).json({ error: INVALID })
+    return
+  }
+
+  // Account has a pending invite but no password yet
+  if (user.invite_token || !user.password_hash) {
+    res.status(401).json({ error: 'Your account is not yet activated. Please use the invite link sent to your email.' })
+    return
+  }
+
+  if (!verifyPassword(password, user.password_hash)) {
+    res.status(401).json({ error: INVALID })
+    return
+  }
+
+  const token = signUserToken(user)
+  res.json({ token, user: toApiUser(user) })
 })
 
 export default router

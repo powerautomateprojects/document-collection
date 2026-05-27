@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Bell, Building2, ChevronDown, ChevronRight, Code2, Database, ExternalLink, MessageSquare, Pencil, Plus, Save, Tag, Trash2, Users, X } from 'lucide-react'
+import { Bell, Building2, ChevronDown, ChevronRight, Code2, Database, ExternalLink, Mail, MessageSquare, Pencil, Plus, Save, Tag, Trash2, Users, X } from 'lucide-react'
 import {
   createOrganization,
   deleteOrganization,
@@ -14,7 +14,7 @@ import {
 } from '../api/categories'
 import { listCollections, seedCollectionData } from '../api/collections'
 import { getPublicSetting, updateSetting } from '../api/settings'
-import { listUsers, createUser, deleteUser, updateUser, type AppUser } from '../api/users'
+import { listUsers, createUser, deleteUser, updateUser, sendInvite, type AppUser } from '../api/users'
 import { useAuth } from '../contexts/AuthContext'
 import type { Category, Collection, Organization } from '../types'
 import { getCategoryColorClasses } from '../utils/categoryColors'
@@ -86,6 +86,14 @@ export default function SettingsPage() {
   const [userCreateError, setUserCreateError] = useState<string | null>(null)
   const [userCreateSuccess, setUserCreateSuccess] = useState<number | null>(null)
   const [userDeleteError, setUserDeleteError] = useState<string | null>(null)
+  // Invite user
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteName, setInviteName] = useState('')
+  const [inviteRole, setInviteRole] = useState<'user' | 'team_manager' | 'administrator'>('user')
+  const [inviteSaving, setInviteSaving] = useState(false)
+  const [inviteError, setInviteError] = useState<string | null>(null)
+  const [inviteSuccess, setInviteSuccess] = useState<string | null>(null)
+  const [inviteLink, setInviteLink] = useState<string | null>(null)
   const [editingUserId, setEditingUserId] = useState<number | null>(null)
   const [editingUserName, setEditingUserName] = useState('')
   const [editingUserEmail, setEditingUserEmail] = useState('')
@@ -224,6 +232,28 @@ export default function SettingsPage() {
       })
       .catch(err => setSeedError((err as Error).message))
       .finally(() => setSeedCollectionsLoading(false))
+  }
+
+  async function handleSendInvite() {
+    const email = inviteEmail.trim()
+    const name = inviteName.trim()
+    if (!email || !name) return
+    setInviteSaving(true)
+    setInviteError(null)
+    setInviteSuccess(null)
+    setInviteLink(null)
+    try {
+      const result = await sendInvite({ email, name, role: inviteRole })
+      setInviteSuccess(result.message)
+      setInviteLink(result.inviteLink ?? null)
+      setInviteEmail('')
+      setInviteName('')
+      setInviteRole('user')
+    } catch (err) {
+      setInviteError((err as Error).message)
+    } finally {
+      setInviteSaving(false)
+    }
   }
 
   async function handleCreateUser() {
@@ -1454,6 +1484,82 @@ export default function SettingsPage() {
 
           {usersExpanded && (
             <div className="border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-6">
+
+              {/* ── Invite User ─────────────────────────────── */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <Mail size={15} className="text-[#2563EB]" />
+                  <h3 className="text-sm font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Invite User by Email</h3>
+                </div>
+                <p className="text-xs text-[#64748B] dark:text-[#94A3B8]">
+                  Send an invite link to a new user. They will receive an email with a link to set their password and activate their account.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Name <span className="text-red-500">*</span></label>
+                    <input
+                      type="text"
+                      value={inviteName}
+                      onChange={e => { setInviteName(e.target.value); setInviteSuccess(null); setInviteLink(null) }}
+                      placeholder="Jane Smith"
+                      className={INPUT}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Email <span className="text-red-500">*</span></label>
+                    <input
+                      type="email"
+                      value={inviteEmail}
+                      onChange={e => { setInviteEmail(e.target.value); setInviteSuccess(null); setInviteLink(null) }}
+                      placeholder="jane@example.com"
+                      className={INPUT}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Role</label>
+                    <select
+                      value={inviteRole}
+                      onChange={e => setInviteRole(e.target.value as typeof inviteRole)}
+                      className={INPUT}
+                    >
+                      <option value="user">User</option>
+                      <option value="team_manager">Team Manager</option>
+                      <option value="administrator">Administrator</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => void handleSendInvite()}
+                    disabled={inviteSaving || !inviteName.trim() || !inviteEmail.trim()}
+                    className="inline-flex items-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+                  >
+                    <Mail size={14} />
+                    {inviteSaving ? 'Sending…' : 'Send Invite'}
+                  </button>
+                  {inviteError && <span className="text-sm text-red-500">{inviteError}</span>}
+                  {inviteSuccess && (
+                    <span className="text-sm text-green-600 dark:text-green-400">{inviteSuccess}</span>
+                  )}
+                </div>
+                {/* Show invite link for local/dev environments where email may not be configured */}
+                {inviteLink && (
+                  <div className="rounded border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3 space-y-1">
+                    <p className="text-xs font-medium text-blue-700 dark:text-blue-300">Invite link (email not configured — share this directly):</p>
+                    <a
+                      href={inviteLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-600 dark:text-blue-400 underline break-all"
+                    >
+                      {inviteLink}
+                    </a>
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-[#E2E8F0] dark:border-[#334155]" />
 
               {/* Create user form */}
               <div className="space-y-3">
