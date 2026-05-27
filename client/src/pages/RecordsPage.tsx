@@ -1308,7 +1308,7 @@ export default function RecordsPage() {
         const regularFields = selectedCollection.fields.filter(f => !f.staffOnly && f.id !== undefined)
         const staffOnlyFields = selectedCollection.fields.filter(f => f.staffOnly && f.id !== undefined)
 
-        function cellDisplay(f: CollectionField, value: string | undefined): string {
+        function cellDisplay(f: CollectionField, value: string | null | undefined): string {
           const raw = value ?? ''
           if (!raw) return '—'
           if (f.type === 'signature') return '[Signature]'

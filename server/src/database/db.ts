@@ -881,4 +881,12 @@ function runMigrations(db: AppDatabase): void {
     db.exec(`ALTER TABLE users ADD COLUMN invite_token_expires_at TEXT`)
     console.log('[db] Migration: added users.invite_token_expires_at')
   }
+  if (!userColSet.has('reset_token')) {
+    db.exec(`ALTER TABLE users ADD COLUMN reset_token TEXT`)
+    console.log('[db] Migration: added users.reset_token')
+  }
+  if (!userColSet.has('reset_token_expires_at')) {
+    db.exec(`ALTER TABLE users ADD COLUMN reset_token_expires_at TEXT`)
+    console.log('[db] Migration: added users.reset_token_expires_at')
+  }
 }

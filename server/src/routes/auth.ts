@@ -1,8 +1,10 @@
 import { Router, type Request, type Response } from 'express'
+import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { getDb } from '../database/db'
 import { authenticateToken, JWT_SECRET } from '../middleware/auth'
-import { verifyPassword } from './invitations'
+import { verifyPassword, hashPassword } from './invitations'
+import { sendNotificationEmail, isEmailDeliveryConfigured } from '../services/notificationEmail'
 
 const router = Router()
 
@@ -318,6 +320,125 @@ router.post('/login-with-password', (req: Request, res: Response) => {
 
   const token = signUserToken(user)
   res.json({ token, user: toApiUser(user) })
+})
+
+const RESET_EXPIRY_MS = 60 * 60 * 1000 // 1 hour
+
+function hashToken(raw: string): string {
+  return crypto.createHash('sha256').update(raw).digest('hex')
+}
+
+/**
+ * POST /api/auth/forgot-password
+ * Public — sends a password-reset link to the given email.
+ * Always returns 200 to avoid leaking whether an email is registered.
+ */
+router.post('/forgot-password', async (req: Request, res: Response) => {
+  const { email } = req.body as { email: unknown }
+
+  if (typeof email !== 'string' || !email.trim()) {
+    res.status(400).json({ error: 'email is required' })
+    return
+  }
+
+  const db = getDb()
+  interface ResetUser { id: number; name: string; password_hash: string | null; invite_token: string | null }
+  const user = db
+    .prepare('SELECT id, name, password_hash, invite_token FROM users WHERE LOWER(email) = LOWER(?)')
+    .get(email.trim()) as unknown as ResetUser | undefined
+
+  // Silently succeed if no matching active account
+  if (!user || !user.password_hash || user.invite_token) {
+    res.json({ message: 'If that email is registered, a reset link has been sent.' })
+    return
+  }
+
+  const rawToken = crypto.randomBytes(32).toString('hex')
+  const tokenHash = hashToken(rawToken)
+  const expiresAt = new Date(Date.now() + RESET_EXPIRY_MS).toISOString()
+
+  db.prepare(
+    `UPDATE users SET reset_token = ?, reset_token_expires_at = ? WHERE id = ?`
+  ).run(tokenHash, expiresAt, user.id)
+
+  const appUrl = (process.env.APP_URL ?? 'http://localhost:5173').replace(/\/$/, '')
+  const resetLink = `${appUrl}/reset-password?token=${rawToken}`
+
+  const responsePayload: { message: string; resetLink?: string } = {
+    message: 'If that email is registered, a reset link has been sent.',
+  }
+
+  if (isEmailDeliveryConfigured()) {
+    try {
+      await sendNotificationEmail({
+        to: email.trim(),
+        subject: 'Reset your Data Collection Pro password',
+        text: [
+          `Hi ${user.name},`,
+          '',
+          'We received a request to reset your password for Data Collection Pro.',
+          '',
+          'Click the link below to choose a new password:',
+          '',
+          resetLink,
+          '',
+          'This link expires in 1 hour. If you did not request a password reset, you can safely ignore this email.',
+        ].join('\n'),
+      })
+    } catch (err) {
+      console.error('[auth] Failed to send reset email:', (err as Error).message)
+    }
+  }
+
+  // Expose link in non-production when email is not configured
+  if (process.env.NODE_ENV !== 'production' && !isEmailDeliveryConfigured()) {
+    responsePayload.resetLink = resetLink
+  }
+
+  res.json(responsePayload)
+})
+
+/**
+ * POST /api/auth/reset-password
+ * Public — validates reset token, sets new password.
+ */
+router.post('/reset-password', (req: Request, res: Response) => {
+  const { token, newPassword } = req.body as { token: unknown; newPassword: unknown }
+
+  if (typeof token !== 'string' || !token.trim()) {
+    res.status(400).json({ error: 'token is required' })
+    return
+  }
+  if (typeof newPassword !== 'string' || newPassword.length < 8) {
+    res.status(400).json({ error: 'newPassword must be at least 8 characters' })
+    return
+  }
+
+  const tokenHash = hashToken(token.trim())
+  const db = getDb()
+
+  interface ResetUser { id: number; reset_token: string | null; reset_token_expires_at: string | null }
+  const user = db
+    .prepare('SELECT id, reset_token, reset_token_expires_at FROM users WHERE reset_token = ?')
+    .get(tokenHash) as unknown as ResetUser | undefined
+
+  if (!user) {
+    res.status(400).json({ error: 'Invalid or expired reset link.' })
+    return
+  }
+
+  if (!user.reset_token_expires_at || new Date(user.reset_token_expires_at) < new Date()) {
+    db.prepare('UPDATE users SET reset_token = NULL, reset_token_expires_at = NULL WHERE id = ?').run(user.id)
+    res.status(400).json({ error: 'This reset link has expired. Please request a new one.' })
+    return
+  }
+
+  const passwordHash = hashPassword(newPassword)
+  db.prepare(
+    `UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires_at = NULL WHERE id = ?`
+  ).run(passwordHash, user.id)
+
+  res.json({ message: 'Password updated successfully.' })
 })
 
 export default router

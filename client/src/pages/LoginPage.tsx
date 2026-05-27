@@ -149,8 +149,6 @@ export default function LoginPage() {
       })
   }, [])
 
-  const [regName, setRegName] = useState('')
-  const [regEmail, setRegEmail] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   // Email + password login (for invited users)
@@ -267,7 +265,7 @@ export default function LoginPage() {
             Select Existing User
           </h2>
           <p className="text-sm text-[#64748B] dark:text-[#94A3B8] mb-5">
-            Pick a profile to continue, or create a new user account below.
+            Pick a profile to continue.
           </p>
 
           {/* Organization dropdown */}
@@ -351,39 +349,12 @@ export default function LoginPage() {
             >
               {pwSigningIn ? 'Signing in…' : 'Sign In'}
             </button>
+            <p className="text-center text-sm text-[#64748B] dark:text-[#94A3B8]">
+              <a href="/forgot-password" className="text-[#2563EB] hover:underline">Forgot password?</a>
+            </p>
           </form>
 
-          {/* Divider */}
-          <div className="border-t border-[#E2E8F0] dark:border-[#1E293B] mb-8" />
 
-          {/* ── Register new account ──────────────────── */}
-          <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B] dark:text-[#475569] uppercase mb-4">
-            Register New Account
-          </p>
-
-          <div className="space-y-3">
-            <input
-              type="text"
-              placeholder="Full name"
-              value={regName}
-              onChange={e => setRegName(e.target.value)}
-              className={INPUT_CLASS}
-            />
-            <input
-              type="email"
-              placeholder="Work email"
-              value={regEmail}
-              onChange={e => setRegEmail(e.target.value)}
-              className={INPUT_CLASS}
-            />
-            <button
-              type="button"
-              disabled
-              className="w-full bg-[#2563EB] text-white font-semibold py-2.5 text-sm tracking-wide rounded-[2px] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Register & Sign In
-            </button>
-          </div>
         </div>
       </div>
     </div>

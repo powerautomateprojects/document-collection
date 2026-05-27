@@ -16,6 +16,8 @@ import NotificationsPage from './pages/NotificationsPage'
 import MySubmissionsPage from './pages/MySubmissionsPage'
 import MySubmissionDetailPage from './pages/MySubmissionDetailPage'
 import AcceptInvitePage from './pages/AcceptInvitePage'
+import ForgotPasswordPage from './pages/ForgotPasswordPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
 
 function RequireAuth() {
   const { user } = useAuth()
@@ -42,6 +44,8 @@ export default function App() {
       />
       <Route path="/fill/:slug" element={<CollectionFillPage />} />
       <Route path="/accept-invite" element={<AcceptInvitePage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
 
       {/* Protected shell */}
       <Route element={<RequireAuth />}>
