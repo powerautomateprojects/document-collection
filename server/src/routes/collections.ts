@@ -3,7 +3,7 @@ import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { getDb } from '../database/db'
 import { authenticateToken, JWT_SECRET } from '../middleware/auth'
-import { loadRequestUserContext, isAdministrator, type RequestUserContext } from '../middleware/organizationAccess'
+import { loadRequestUserContext, isAdministrator, canViewResponses, canViewAllResponses, type RequestUserContext } from '../middleware/organizationAccess'
 import { sendNotificationEmail, isEmailDeliveryConfigured } from '../services/notificationEmail'
 
 const router = Router()
@@ -65,6 +65,7 @@ interface DbCollection {
   anonymous: number
   allow_submission_edits: number
   submission_edit_window_hours: number | null
+  location_id: number | null
   created_at: string
   updated_at: string
   creator_name?: string
@@ -206,6 +207,7 @@ interface CollectionBody {
   anonymous?: boolean
   allowSubmissionEdits?: boolean
   submissionEditWindowHours?: number
+  locationId?: number | null
   fields?: FieldInput[]
 }
 
@@ -349,6 +351,7 @@ function toApiCollection(
     anonymous: c.anonymous === 1,
     allowSubmissionEdits: c.allow_submission_edits === 1,
     submissionEditWindowHours: c.submission_edit_window_hours,
+    locationId: c.location_id,
     createdAt: c.created_at,
     updatedAt: c.updated_at,
     fields: fields.map(f => ({
@@ -1296,8 +1299,8 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
         `INSERT INTO collections
            (slug, title, status, description, category, created_by, date_due, cover_photo_url,
             logo_url, instructions, instructions_doc_url, organization_id, anonymous, allow_submission_edits,
-            submission_edit_window_hours, active_version_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
+            submission_edit_window_hours, location_id, active_version_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
       )
       .run(
         slug,
@@ -1314,7 +1317,8 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
         organization.id,
         body.anonymous ? 1 : 0,
         editSettings.allowSubmissionEdits ? 1 : 0,
-        editSettings.submissionEditWindowHours
+        editSettings.submissionEditWindowHours,
+        body.locationId ?? null
       )
 
     const id = r.lastInsertRowid as number
@@ -1519,7 +1523,7 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
       `UPDATE collections
          SET title = ?, status = ?, description = ?, category = ?, date_due = ?, cover_photo_url = ?,
            logo_url = ?, instructions = ?, instructions_doc_url = ?, organization_id = ?, anonymous = ?, allow_submission_edits = ?,
-           submission_edit_window_hours = ?, active_version_id = ?,
+           submission_edit_window_hours = ?, location_id = ?, active_version_id = ?,
            updated_at = datetime('now')
        WHERE id = ?`
     ).run(
@@ -1536,6 +1540,7 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
       body.anonymous ? 1 : 0,
       editSettings.allowSubmissionEdits ? 1 : 0,
       editSettings.submissionEditWindowHours,
+      body.locationId ?? null,
       targetVersionId,
       id
     )
@@ -1885,18 +1890,51 @@ router.get('/:id/responses', authenticateToken, (req: Request, res: Response) =>
     return
   }
 
+  // Plain users cannot view collection results
+  if (!canViewResponses(context)) {
+    res.status(403).json({ error: 'You do not have permission to view collection results' })
+    return
+  }
+
   const db = getDb()
-  const exists = fetchAccessibleCollectionById(id, context)
-  if (!exists) {
+  const collection = fetchAccessibleCollectionById(id, context)
+  if (!collection) {
     res.status(404).json({ error: 'Collection not found' })
     return
   }
 
-  const responses = db
-    .prepare(
-      'SELECT * FROM collection_responses WHERE collection_id = ? ORDER BY submitted_at DESC'
-    )
-    .all(id) as unknown as DbResponse[]
+  // Determine whether to apply location filtering
+  // Reviewers: only see responses matching one of their assigned locations
+  // Higher roles: see everything
+  let responses: DbResponse[]
+
+  if (!canViewAllResponses(context) && (collection as DbCollection & { location_id?: number | null }).location_id) {
+    // Reviewer: filter to responses in their assigned locations
+    const userLocations = db
+      .prepare('SELECT location_id FROM user_locations WHERE user_id = ?')
+      .all(context.id) as unknown as Array<{ location_id: number }>
+    const locationIds = userLocations.map(ul => ul.location_id)
+
+    if (locationIds.length === 0) {
+      res.json([])
+      return
+    }
+
+    const ph = locationIds.map(() => '?').join(',')
+    responses = db
+      .prepare(
+        `SELECT * FROM collection_responses
+         WHERE collection_id = ? AND location_id IN (${ph})
+         ORDER BY submitted_at DESC`
+      )
+      .all(id, ...locationIds) as unknown as DbResponse[]
+  } else {
+    responses = db
+      .prepare(
+        'SELECT * FROM collection_responses WHERE collection_id = ? ORDER BY submitted_at DESC'
+      )
+      .all(id) as unknown as DbResponse[]
+  }
 
   if (responses.length === 0) {
     res.json([])
@@ -1924,6 +1962,7 @@ router.get('/:id/responses', authenticateToken, (req: Request, res: Response) =>
       respondentName: r.respondent_name,
       respondentEmail: r.respondent_email,
       submittedAt: r.submitted_at,
+      locationId: (r as DbResponse & { location_id?: number | null }).location_id ?? null,
       values: (valsByResponse.get(r.id) ?? []).map(v => ({
         fieldId: v.field_id,
         value: v.value,

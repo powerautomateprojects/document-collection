@@ -12,7 +12,7 @@ interface DbUser {
   id: number
   name: string
   email: string
-  role: 'super_admin' | 'administrator' | 'team_manager' | 'user'
+  role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
   organization: string | null
   organization_id: number | null
   organization_name?: string | null
@@ -187,7 +187,7 @@ router.post('/register', authenticateToken, (req: Request, res: Response) => {
     return
   }
 
-  const VALID_ROLES = ['super_admin', 'administrator', 'team_manager', 'user'] as const
+  const VALID_ROLES = ['super_admin', 'administrator', 'team_manager', 'reviewer', 'user'] as const
   const userRole =
     typeof role === 'string' && (VALID_ROLES as readonly string[]).includes(role)
       ? (role as typeof VALID_ROLES[number])

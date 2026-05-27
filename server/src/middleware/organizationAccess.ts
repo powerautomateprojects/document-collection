@@ -3,14 +3,14 @@ import { getDb } from '../database/db'
 
 export interface RequestUserContext {
   id: number
-  role: 'super_admin' | 'administrator' | 'team_manager' | 'user'
+  role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
   organizationId: number | null
   organizationName: string | null
 }
 
 interface DbUserContext {
   id: number
-  role: 'super_admin' | 'administrator' | 'team_manager' | 'user'
+  role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
   organization_id: number | null
   organization_name: string | null
 }
@@ -23,6 +23,16 @@ export function isAdministrator(context: RequestUserContext): boolean {
 /** Returns true for both super_admin and administrator. */
 export function isAdminOrSuperAdmin(context: RequestUserContext): boolean {
   return context.role === 'super_admin' || context.role === 'administrator'
+}
+
+/** Returns true for roles that can view collection responses (reviewer and above). */
+export function canViewResponses(context: RequestUserContext): boolean {
+  return context.role !== 'user'
+}
+
+/** Returns true for roles that can see all responses without location filtering. */
+export function canViewAllResponses(context: RequestUserContext): boolean {
+  return context.role === 'super_admin' || context.role === 'administrator' || context.role === 'team_manager'
 }
 
 export function loadRequestUserContext(req: Request): RequestUserContext | null {

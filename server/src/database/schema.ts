@@ -19,10 +19,28 @@ export function createSchema(db: AppDatabase): void {
       name         TEXT    NOT NULL,
       email        TEXT    UNIQUE NOT NULL,
       role         TEXT    NOT NULL DEFAULT 'user'
-                           CHECK(role IN ('super_admin', 'administrator', 'team_manager', 'user')),
+                           CHECK(role IN ('super_admin', 'administrator', 'team_manager', 'reviewer', 'user')),
       organization TEXT,
       organization_id INTEGER REFERENCES organizations(id),
       created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS locations (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      name            TEXT    NOT NULL,
+      organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(name, organization_id)
+    );
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_locations (
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      PRIMARY KEY (user_id, location_id)
     );
   `)
 
@@ -57,6 +75,7 @@ export function createSchema(db: AppDatabase): void {
       anonymous            INTEGER NOT NULL DEFAULT 0,
       allow_submission_edits INTEGER NOT NULL DEFAULT 0,
       submission_edit_window_hours INTEGER,
+      location_id          INTEGER REFERENCES locations(id) ON DELETE SET NULL,
       created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
       updated_at           TEXT    NOT NULL DEFAULT (datetime('now'))
     );
@@ -117,6 +136,7 @@ export function createSchema(db: AppDatabase): void {
       respondent_email TEXT,
       editable_until   TEXT,
       last_edited_at   TEXT,
+      location_id      INTEGER REFERENCES locations(id) ON DELETE SET NULL,
       submitted_at     TEXT    NOT NULL DEFAULT (datetime('now'))
     );
   `)
@@ -250,6 +270,7 @@ export function seedData(db: AppDatabase): void {
     db.transaction(() => {
       insertUser.run('Jon Rivera',  'jon@datacollectionpro.com',   'administrator', defaultOrganization.id, 'TSD')
       insertUser.run('Sarah Chen',  'sarah@datacollectionpro.com', 'team_manager', defaultOrganization.id, 'TSD')
+      insertUser.run('Alex Kim',    'alex@datacollectionpro.com',  'reviewer', defaultOrganization.id, 'TSD')
       insertUser.run('Mike Torres', 'mike@datacollectionpro.com',  'user', defaultOrganization.id, 'TSD')
     })()
     console.log('[db] Seed users inserted')

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Bell, Building2, ChevronDown, ChevronRight, Code2, Database, ExternalLink, Mail, MessageSquare, Pencil, Plus, Save, Tag, Trash2, Users, X } from 'lucide-react'
+import { Fragment, useEffect, useState } from 'react'
+import { Bell, Building2, ChevronDown, ChevronRight, Code2, Database, ExternalLink, Mail, MapPin, MessageSquare, Pencil, Plus, Save, Tag, Trash2, Users, X } from 'lucide-react'
 import {
   createOrganization,
   deleteOrganization,
@@ -15,8 +15,10 @@ import {
 import { listCollections, seedCollectionData } from '../api/collections'
 import { getPublicSetting, updateSetting } from '../api/settings'
 import { listUsers, createUser, deleteUser, updateUser, sendInvite, type AppUser } from '../api/users'
+import { getUserLocations, updateUserLocations, listLocations, createLocation, deleteLocation, updateLocation } from '../api/locations'
+import { LocationTypeahead } from '../components/common/LocationTypeahead'
 import { useAuth } from '../contexts/AuthContext'
-import type { Category, Collection, Organization } from '../types'
+import type { Category, Collection, Location, Organization } from '../types'
 import { getCategoryColorClasses } from '../utils/categoryColors'
 
 const INPUT =
@@ -31,12 +33,15 @@ function getUserRoleBadgeClass(role: AppUser['role']): string {
     ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
     : role === 'team_manager'
     ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+    : role === 'reviewer'
+    ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300'
     : 'bg-[#E2E8F0] text-[#475569] dark:bg-[#334155] dark:text-[#CBD5E1]'
 }
 
 function formatRoleLabel(role: AppUser['role']): string {
   if (role === 'super_admin') return 'super admin'
-  return role === 'team_manager' ? 'team manager' : role
+  if (role === 'team_manager') return 'team manager'
+  return role
 }
 
 export default function SettingsPage() {
@@ -55,6 +60,7 @@ export default function SettingsPage() {
   const [notificationsExpanded, setNotificationsExpanded] = useState(false)
   const [loginPageExpanded, setLoginPageExpanded] = useState(false)
   const [organizationsExpanded, setOrganizationsExpanded] = useState(false)
+  const [locationsExpanded, setLocationsExpanded] = useState(false)
   const [usersExpanded, setUsersExpanded] = useState(false)
   const [seedExpanded, setSeedExpanded] = useState(false)
   const [organizations, setOrganizations] = useState<Organization[]>([])
@@ -69,6 +75,16 @@ export default function SettingsPage() {
   const [editingOrganizationId, setEditingOrganizationId] = useState<number | null>(null)
   const [editingOrganizationName, setEditingOrganizationName] = useState('')
   const [editingOrganizationDescription, setEditingOrganizationDescription] = useState('')
+  const [locationsList, setLocationsList] = useState<Location[]>([])
+  const [locationsLoading, setLocationsLoading] = useState(false)
+  const [newLocationName, setNewLocationName] = useState('')
+  const [locationCreateSaving, setLocationCreateSaving] = useState(false)
+  const [locationCreateError, setLocationCreateError] = useState<string | null>(null)
+  const [locationDeleteError, setLocationDeleteError] = useState<string | null>(null)
+  const [locationSaveError, setLocationSaveError] = useState<string | null>(null)
+  const [locationEditSaving, setLocationEditSaving] = useState(false)
+  const [editingLocationId, setEditingLocationId] = useState<number | null>(null)
+  const [editingLocationName, setEditingLocationName] = useState('')
   const [allUsers, setAllUsers] = useState<AppUser[]>([])
   const [seedCollections, setSeedCollections] = useState<Collection[]>([])
   const [seedCollectionsLoading, setSeedCollectionsLoading] = useState(false)
@@ -80,7 +96,7 @@ export default function SettingsPage() {
   const [usersLoading, setUsersLoading] = useState(false)
   const [newUserName, setNewUserName] = useState('')
   const [newUserEmail, setNewUserEmail] = useState('')
-  const [newUserRole, setNewUserRole] = useState<'user' | 'team_manager' | 'administrator' | 'super_admin'>('user')
+  const [newUserRole, setNewUserRole] = useState<'user' | 'reviewer' | 'team_manager' | 'administrator' | 'super_admin'>('user')
   const [newUserOrganizationId, setNewUserOrganizationId] = useState('')
   const [userCreateSaving, setUserCreateSaving] = useState(false)
   const [userCreateError, setUserCreateError] = useState<string | null>(null)
@@ -89,7 +105,7 @@ export default function SettingsPage() {
   // Invite user
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteName, setInviteName] = useState('')
-  const [inviteRole, setInviteRole] = useState<'user' | 'team_manager' | 'administrator'>('user')
+  const [inviteRole, setInviteRole] = useState<'user' | 'reviewer' | 'team_manager' | 'administrator'>('user')
   const [inviteSaving, setInviteSaving] = useState(false)
   const [inviteError, setInviteError] = useState<string | null>(null)
   const [inviteSuccess, setInviteSuccess] = useState<string | null>(null)
@@ -97,10 +113,12 @@ export default function SettingsPage() {
   const [editingUserId, setEditingUserId] = useState<number | null>(null)
   const [editingUserName, setEditingUserName] = useState('')
   const [editingUserEmail, setEditingUserEmail] = useState('')
-  const [editingUserRole, setEditingUserRole] = useState<'user' | 'team_manager' | 'administrator' | 'super_admin'>('user')
+  const [editingUserRole, setEditingUserRole] = useState<'user' | 'reviewer' | 'team_manager' | 'administrator' | 'super_admin'>('user')
   const [editingUserOrganizationId, setEditingUserOrganizationId] = useState('')
   const [userEditSaving, setUserEditSaving] = useState(false)
   const [userEditError, setUserEditError] = useState<string | null>(null)
+  const [editingUserLocations, setEditingUserLocations] = useState<Location[]>([])
+  const [editingUserLocationsLoading, setEditingUserLocationsLoading] = useState(false)
   const [loginSubtitle, setLoginSubtitle] = useState('')
   const [loginSubtitleDraft, setLoginSubtitleDraft] = useState('')
   const [loginSubtitleSaving, setLoginSubtitleSaving] = useState(false)
@@ -381,6 +399,80 @@ export default function SettingsPage() {
     }
   }
 
+  async function loadLocations() {
+    setLocationsLoading(true)
+    try {
+      const locs = await listLocations()
+      setLocationsList(locs)
+    } catch (_) {
+      // silent
+    } finally {
+      setLocationsLoading(false)
+    }
+  }
+
+  async function handleCreateLocation() {
+    const name = newLocationName.trim()
+    if (!name) {
+      setLocationCreateError('Location name is required.')
+      return
+    }
+    setLocationCreateSaving(true)
+    setLocationCreateError(null)
+    try {
+      const created = await createLocation(name)
+      setLocationsList(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
+      setNewLocationName('')
+    } catch (err) {
+      setLocationCreateError((err as Error).message)
+    } finally {
+      setLocationCreateSaving(false)
+    }
+  }
+
+  function startLocationEdit(loc: Location) {
+    setEditingLocationId(loc.id)
+    setEditingLocationName(loc.name)
+    setLocationSaveError(null)
+    setLocationDeleteError(null)
+  }
+
+  function cancelLocationEdit() {
+    setEditingLocationId(null)
+    setEditingLocationName('')
+    setLocationSaveError(null)
+  }
+
+  async function handleSaveLocation(id: number) {
+    const name = editingLocationName.trim()
+    if (!name) {
+      setLocationSaveError('Location name is required.')
+      return
+    }
+    setLocationEditSaving(true)
+    setLocationSaveError(null)
+    try {
+      const updated = await updateLocation(id, name)
+      setLocationsList(prev => prev.map(l => (l.id === id ? updated : l)).sort((a, b) => a.name.localeCompare(b.name)))
+      cancelLocationEdit()
+    } catch (err) {
+      setLocationSaveError((err as Error).message)
+    } finally {
+      setLocationEditSaving(false)
+    }
+  }
+
+  async function handleDeleteLocation(id: number) {
+    setLocationDeleteError(null)
+    try {
+      await deleteLocation(id)
+      setLocationsList(prev => prev.filter(l => l.id !== id))
+      if (editingLocationId === id) cancelLocationEdit()
+    } catch (err) {
+      setLocationDeleteError((err as Error).message)
+    }
+  }
+
   async function handleSeedCollection() {
     const collectionId = parseInt(seedCollectionId, 10)
     const count = parseInt(seedCount.trim(), 10)
@@ -501,6 +593,14 @@ export default function SettingsPage() {
     setEditingUserOrganizationId(u.organizationId ? String(u.organizationId) : '')
     setUserEditError(null)
     setUserDeleteError(null)
+    setEditingUserLocations([])
+    if (u.role === 'reviewer') {
+      setEditingUserLocationsLoading(true)
+      getUserLocations(u.id)
+        .then(locs => setEditingUserLocations(locs))
+        .catch(() => { /* silent — locations stay empty */ })
+        .finally(() => setEditingUserLocationsLoading(false))
+    }
   }
 
   function cancelUserEdit() {
@@ -510,6 +610,7 @@ export default function SettingsPage() {
     setEditingUserOrganizationId('')
     setEditingUserRole('user')
     setUserEditError(null)
+    setEditingUserLocations([])
   }
 
   async function handleSaveUser(id: number) {
@@ -534,6 +635,9 @@ export default function SettingsPage() {
         role: editingUserRole,
         organizationId,
       })
+      if (editingUserRole === 'reviewer') {
+        await updateUserLocations(id, editingUserLocations.map(l => l.id))
+      }
       setAllUsers(prev => prev.map(u => (u.id === id ? updated : u)))
       cancelUserEdit()
     } catch (err) {
@@ -1453,6 +1557,236 @@ export default function SettingsPage() {
         )}
       </section>}
 
+      {/* Locations */}
+      {(user?.role === 'super_admin' || user?.role === 'administrator') && (
+        <section className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
+          <button
+            type="button"
+            onClick={() => {
+              const next = !locationsExpanded
+              setLocationsExpanded(next)
+              if (next && locationsList.length === 0) void loadLocations()
+            }}
+            className="w-full flex items-center justify-between gap-4 px-5 py-4 text-left hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-teal-50 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300">
+                <MapPin size={18} />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Locations</h2>
+                <p className="text-sm text-[#64748B] mt-1">Create and manage locations used to scope reviewer access to collection responses.</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="text-xs font-medium text-[#64748B]">{locationsList.length} total</span>
+              {locationsExpanded ? (
+                <ChevronDown size={18} className="text-[#64748B]" />
+              ) : (
+                <ChevronRight size={18} className="text-[#64748B]" />
+              )}
+            </div>
+          </button>
+
+          {locationsExpanded && (
+            <div className="border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-6">
+              {/* Add location form */}
+              <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-3 items-end">
+                <div>
+                  <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Name <span className="text-red-500">*</span></label>
+                  <input
+                    type="text"
+                    value={newLocationName}
+                    onChange={e => { setNewLocationName(e.target.value); setLocationCreateError(null) }}
+                    placeholder="e.g. North Campus"
+                    className={INPUT}
+                    onKeyDown={e => { if (e.key === 'Enter') void handleCreateLocation() }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleCreateLocation()}
+                  disabled={locationCreateSaving || !newLocationName.trim()}
+                  className="inline-flex items-center justify-center gap-1.5 bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+                >
+                  <Plus size={14} />
+                  {locationCreateSaving ? 'Adding…' : 'Add Location'}
+                </button>
+              </div>
+
+              {locationCreateError && <p className="text-sm text-red-500">{locationCreateError}</p>}
+              {locationSaveError && <p className="text-sm text-red-500">{locationSaveError}</p>}
+              {locationDeleteError && <p className="text-sm text-red-500">{locationDeleteError}</p>}
+
+              <div className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] overflow-hidden">
+                <table className="hidden md:table w-full text-sm">
+                  <thead>
+                    <tr className="bg-[#F8FAFC] dark:bg-[#0F172A] text-left">
+                      <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide">Name</th>
+                      <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide">Created</th>
+                      <th className="px-4 py-2.5 w-[170px]"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E2E8F0] dark:divide-[#334155]">
+                    {locationsList.map(loc => {
+                      const isEditing = editingLocationId === loc.id
+                      return (
+                        <tr key={loc.id}>
+                          <td className="px-4 py-2.5 text-[#1E293B] dark:text-[#F1F5F9] min-w-[200px]">
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={editingLocationName}
+                                onChange={e => setEditingLocationName(e.target.value)}
+                                className={INPUT}
+                                onKeyDown={e => { if (e.key === 'Enter') void handleSaveLocation(loc.id) }}
+                                autoFocus
+                              />
+                            ) : loc.name}
+                          </td>
+                          <td className="px-4 py-2.5 text-[#64748B] text-xs">
+                            {new Date(loc.createdAt).toLocaleDateString()}
+                          </td>
+                          <td className="px-4 py-2.5 text-right">
+                            <div className="inline-flex items-center gap-2">
+                              {isEditing ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleSaveLocation(loc.id)}
+                                    disabled={locationEditSaving || !editingLocationName.trim()}
+                                    className="inline-flex items-center gap-1 border border-[#16A34A] text-[#16A34A] hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50 text-xs font-medium px-2 py-1 rounded transition-colors"
+                                  >
+                                    <Save size={12} />
+                                    Save
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={cancelLocationEdit}
+                                    disabled={locationEditSaving}
+                                    className="inline-flex items-center gap-1 border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-xs font-medium px-2 py-1 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
+                                  >
+                                    <X size={12} />
+                                    Cancel
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => startLocationEdit(loc)}
+                                  className="text-[#94A3B8] hover:text-[#2563EB] transition-colors"
+                                  title={`Rename ${loc.name}`}
+                                >
+                                  <Pencil size={14} />
+                                </button>
+                              )}
+                              {!isEditing && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDeleteLocation(loc.id)}
+                                  className="text-[#94A3B8] hover:text-red-500 transition-colors"
+                                  title={`Delete ${loc.name}`}
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {locationsList.length === 0 && !locationsLoading && (
+                      <tr>
+                        <td colSpan={3} className="px-4 py-6 text-center text-sm text-[#94A3B8] italic">No locations yet. Add one above.</td>
+                      </tr>
+                    )}
+                    {locationsLoading && (
+                      <tr>
+                        <td colSpan={3} className="px-4 py-6 text-center text-sm text-[#94A3B8] italic">Loading…</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+
+                {/* Mobile list */}
+                <div className="md:hidden divide-y divide-[#E2E8F0] dark:divide-[#334155]">
+                  {locationsList.map(loc => {
+                    const isEditing = editingLocationId === loc.id
+                    return (
+                      <div key={loc.id} className="p-4 space-y-3">
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={editingLocationName}
+                            onChange={e => setEditingLocationName(e.target.value)}
+                            className={INPUT}
+                            autoFocus
+                          />
+                        ) : (
+                          <div>
+                            <p className="text-sm font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{loc.name}</p>
+                            <p className="text-xs text-[#94A3B8] mt-1">Created {new Date(loc.createdAt).toLocaleDateString()}</p>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-2">
+                          {isEditing ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void handleSaveLocation(loc.id)}
+                                disabled={locationEditSaving || !editingLocationName.trim()}
+                                className="inline-flex items-center gap-1 border border-[#16A34A] text-[#16A34A] hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50 text-xs font-medium px-2.5 py-1.5 rounded transition-colors"
+                              >
+                                <Save size={12} />
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={cancelLocationEdit}
+                                disabled={locationEditSaving}
+                                className="inline-flex items-center gap-1 border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-xs font-medium px-2.5 py-1.5 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
+                              >
+                                <X size={12} />
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => startLocationEdit(loc)}
+                              className="inline-flex items-center gap-1 border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-xs font-medium px-2.5 py-1.5 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
+                            >
+                              <Pencil size={12} />
+                              Rename
+                            </button>
+                          )}
+                          {!isEditing && (
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteLocation(loc.id)}
+                              className="inline-flex items-center gap-1 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-xs font-medium px-2.5 py-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                            >
+                              <Trash2 size={12} />
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                  {locationsList.length === 0 && !locationsLoading && (
+                    <p className="p-4 text-sm text-[#94A3B8] italic text-center">No locations yet. Add one above.</p>
+                  )}
+                  {locationsLoading && (
+                    <p className="p-4 text-sm text-[#94A3B8] italic text-center">Loading…</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
         {/* User Accounts */}
         <section className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
           <button
@@ -1523,6 +1857,7 @@ export default function SettingsPage() {
                       className={INPUT}
                     >
                       <option value="user">User</option>
+                      <option value="reviewer">Reviewer</option>
                       <option value="team_manager">Team Manager</option>
                       <option value="administrator">Administrator</option>
                     </select>
@@ -1593,6 +1928,7 @@ export default function SettingsPage() {
                       className={INPUT}
                     >
                       <option value="user">User</option>
+                      <option value="reviewer">Reviewer</option>
                       <option value="team_manager">Team Manager</option>
                       <option value="administrator">Administrator</option>
                       {user?.role === 'super_admin' && (
@@ -1671,7 +2007,8 @@ export default function SettingsPage() {
                       {allUsers.map(u => {
                         const isEditing = editingUserId === u.id
                         return (
-                          <tr key={u.id} className={`${u.id === user?.id ? 'bg-blue-50 dark:bg-blue-900/10' : ''}`}>
+                          <Fragment key={u.id}>
+                          <tr className={`${u.id === user?.id ? 'bg-blue-50 dark:bg-blue-900/10' : ''}`}>
                             <td className="px-4 py-2.5 text-[#94A3B8] font-mono text-xs">{u.id}</td>
                             <td className="px-4 py-2.5 text-[#1E293B] dark:text-[#F1F5F9] min-w-[180px]">
                               {isEditing ? (
@@ -1710,6 +2047,7 @@ export default function SettingsPage() {
                                   className={INPUT}
                                 >
                                   <option value="user">User</option>
+                                  <option value="reviewer">Reviewer</option>
                                   <option value="team_manager">Team Manager</option>
                                   <option value="administrator">Administrator</option>
                                   {user?.role === 'super_admin' && (
@@ -1784,6 +2122,48 @@ export default function SettingsPage() {
                               </div>
                             </td>
                           </tr>
+                          {isEditing && editingUserRole === 'reviewer' && (
+                            <tr>
+                              <td colSpan={6} className="px-4 pb-3 bg-teal-50 dark:bg-teal-900/10 border-t border-teal-100 dark:border-teal-900/30">
+                                <div className="space-y-1.5">
+                                  <p className="text-xs font-medium text-[#475569] dark:text-[#94A3B8]">Assigned Locations</p>
+                                  {editingUserLocationsLoading ? (
+                                    <p className="text-xs text-[#94A3B8] italic">Loading…</p>
+                                  ) : (
+                                    <div className="flex flex-wrap gap-1.5 mb-1.5">
+                                      {editingUserLocations.map(loc => (
+                                        <span key={loc.id} className="inline-flex items-center gap-1 bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-xs px-2 py-0.5 rounded">
+                                          {loc.name}
+                                          <button
+                                            type="button"
+                                            onClick={() => setEditingUserLocations(prev => prev.filter(l => l.id !== loc.id))}
+                                            className="hover:text-teal-900 dark:hover:text-teal-100"
+                                          >
+                                            <X size={10} />
+                                          </button>
+                                        </span>
+                                      ))}
+                                      {editingUserLocations.length === 0 && (
+                                        <span className="text-xs text-[#94A3B8] italic">No locations assigned</span>
+                                      )}
+                                    </div>
+                                  )}
+                                  <div className="max-w-xs">
+                                    <LocationTypeahead
+                                      value={null}
+                                      onChange={loc => {
+                                        if (loc && !editingUserLocations.find(l => l.id === loc.id)) {
+                                          setEditingUserLocations(prev => [...prev, loc])
+                                        }
+                                      }}
+                                      placeholder="Add location…"
+                                    />
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                          </Fragment>
                         )
                       })}
                       {allUsers.length === 0 && !usersLoading && (
@@ -1838,6 +2218,7 @@ export default function SettingsPage() {
                                 className={INPUT}
                               >
                                 <option value="user">User</option>
+                                <option value="reviewer">Reviewer</option>
                                 <option value="team_manager">Team Manager</option>
                                 <option value="administrator">Administrator</option>
                                 {user?.role === 'super_admin' && (
@@ -1854,6 +2235,41 @@ export default function SettingsPage() {
                                   <option key={org.id} value={String(org.id)}>{org.name}</option>
                                 ))}
                               </select>
+                              {editingUserRole === 'reviewer' && (
+                                <div className="space-y-1.5 pt-1">
+                                  <p className="text-xs font-medium text-[#475569] dark:text-[#94A3B8]">Assigned Locations</p>
+                                  {editingUserLocationsLoading ? (
+                                    <p className="text-xs text-[#94A3B8] italic">Loading…</p>
+                                  ) : (
+                                    <div className="flex flex-wrap gap-1.5 mb-1.5">
+                                      {editingUserLocations.map(loc => (
+                                        <span key={loc.id} className="inline-flex items-center gap-1 bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-xs px-2 py-0.5 rounded">
+                                          {loc.name}
+                                          <button
+                                            type="button"
+                                            onClick={() => setEditingUserLocations(prev => prev.filter(l => l.id !== loc.id))}
+                                            className="hover:text-teal-900 dark:hover:text-teal-100"
+                                          >
+                                            <X size={10} />
+                                          </button>
+                                        </span>
+                                      ))}
+                                      {editingUserLocations.length === 0 && (
+                                        <span className="text-xs text-[#94A3B8] italic">No locations assigned</span>
+                                      )}
+                                    </div>
+                                  )}
+                                  <LocationTypeahead
+                                    value={null}
+                                    onChange={loc => {
+                                      if (loc && !editingUserLocations.find(l => l.id === loc.id)) {
+                                        setEditingUserLocations(prev => [...prev, loc])
+                                      }
+                                    }}
+                                    placeholder="Add location…"
+                                  />
+                                </div>
+                              )}
                             </div>
                           ) : (
                             <div className="space-y-1 text-sm text-[#64748B]">

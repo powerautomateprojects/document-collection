@@ -21,7 +21,7 @@ interface NavItem {
   icon: LucideIcon
   label: string
   to: string
-  roles?: Array<'super_admin' | 'administrator' | 'team_manager' | 'user'>
+  roles?: Array<'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'>
 }
 
 const NAV_ITEMS: NavItem[] = [

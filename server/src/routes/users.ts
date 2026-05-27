@@ -9,7 +9,7 @@ interface DbUser {
   id: number
   name: string
   email: string
-  role: 'super_admin' | 'administrator' | 'team_manager' | 'user'
+  role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
   organization: string | null
   organization_id: number | null
   organization_name?: string | null
@@ -155,7 +155,7 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
     return
   }
 
-  const VALID_ROLES = ['super_admin', 'administrator', 'team_manager', 'user'] as const
+  const VALID_ROLES = ['super_admin', 'administrator', 'team_manager', 'reviewer', 'user'] as const
   if (typeof role !== 'string' || !(VALID_ROLES as readonly string[]).includes(role)) {
     res.status(400).json({ error: 'Invalid role' })
     return
@@ -242,7 +242,7 @@ router.patch('/:id', authenticateToken, (req: Request, res: Response) => {
     return
   }
 
-  const VALID_ROLES = ['super_admin', 'administrator', 'team_manager', 'user'] as const
+  const VALID_ROLES = ['super_admin', 'administrator', 'team_manager', 'reviewer', 'user'] as const
   if (typeof role !== 'string' || !(VALID_ROLES as readonly string[]).includes(role)) {
     res.status(400).json({ error: 'Invalid role' })
     return
@@ -347,6 +347,78 @@ router.delete('/:id', authenticateToken, (req: Request, res: Response) => {
 
   db.prepare('DELETE FROM users WHERE id = ?').run(id)
   res.status(204).end()
+})
+
+// ── User location assignment ──────────────────────────────────
+
+router.get('/:id/locations', authenticateToken, (req: Request, res: Response) => {
+  const currentUser = loadRequestUserContext(req)
+  if (!currentUser || (currentUser.role !== 'administrator' && currentUser.role !== 'super_admin')) {
+    res.status(403).json({ error: 'Administrator access required' })
+    return
+  }
+
+  const id = parseInt(req.params.id, 10)
+  if (isNaN(id)) {
+    res.status(400).json({ error: 'Invalid user ID' })
+    return
+  }
+
+  const db = getDb()
+  const locations = db
+    .prepare(
+      `SELECT l.id, l.name FROM user_locations ul
+       JOIN locations l ON l.id = ul.location_id
+       WHERE ul.user_id = ?
+       ORDER BY lower(l.name)`
+    )
+    .all(id) as unknown as Array<{ id: number; name: string }>
+
+  res.json(locations)
+})
+
+router.put('/:id/locations', authenticateToken, (req: Request, res: Response) => {
+  const currentUser = loadRequestUserContext(req)
+  if (!currentUser || (currentUser.role !== 'administrator' && currentUser.role !== 'super_admin')) {
+    res.status(403).json({ error: 'Administrator access required' })
+    return
+  }
+
+  const id = parseInt(req.params.id, 10)
+  if (isNaN(id)) {
+    res.status(400).json({ error: 'Invalid user ID' })
+    return
+  }
+
+  const { locationIds } = req.body as { locationIds: unknown }
+  if (!Array.isArray(locationIds) || locationIds.some(x => typeof x !== 'number')) {
+    res.status(400).json({ error: 'locationIds must be an array of numbers' })
+    return
+  }
+
+  const db = getDb()
+  const user = db.prepare('SELECT id, organization_id FROM users WHERE id = ?').get(id) as unknown as { id: number; organization_id: number | null } | undefined
+  if (!user) {
+    res.status(404).json({ error: 'User not found' })
+    return
+  }
+
+  // org-scoped admins can only manage users in their own org
+  if (currentUser.role === 'administrator' && user.organization_id !== currentUser.organizationId) {
+    res.status(403).json({ error: 'You can only manage users within your own organization' })
+    return
+  }
+
+  try {
+    db.prepare('DELETE FROM user_locations WHERE user_id = ?').run(id)
+    for (const locId of locationIds as number[]) {
+      db.prepare('INSERT OR IGNORE INTO user_locations (user_id, location_id) VALUES (?, ?)').run(id, locId)
+    }
+    res.status(204).end()
+  } catch (err) {
+    console.error('[users] update locations error:', err)
+    res.status(500).json({ error: (err as Error).message ?? 'Failed to update user locations' })
+  }
 })
 
 export default router

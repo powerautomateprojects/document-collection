@@ -889,4 +889,126 @@ function runMigrations(db: AppDatabase): void {
     db.exec(`ALTER TABLE users ADD COLUMN reset_token_expires_at TEXT`)
     console.log('[db] Migration: added users.reset_token_expires_at')
   }
+
+  // ── Rebuild users table to include 'reviewer' role ──────────────────────────
+  const usersSchemaV2 = (
+    db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='users'`)
+      .get() as unknown as { sql: string } | undefined
+  )?.sql ?? ''
+  if (!usersSchemaV2.includes("'reviewer'")) {
+    try { db.exec('PRAGMA foreign_keys = OFF') } catch { /* Turso: FK not enforced */ }
+    try { db.exec('PRAGMA legacy_alter_table = ON') } catch { /* Turso: not needed */ }
+    try {
+      db.transaction(() => {
+        db.prepare('ALTER TABLE users RENAME TO users_old').run()
+        db.prepare(`
+          CREATE TABLE users (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            name                    TEXT    NOT NULL,
+            email                   TEXT    NOT NULL UNIQUE,
+            role                    TEXT    NOT NULL DEFAULT 'user'
+                                            CHECK(role IN ('super_admin', 'administrator', 'team_manager', 'reviewer', 'user')),
+            organization            TEXT,
+            created_at              TEXT    NOT NULL DEFAULT (datetime('now')),
+            organization_id         INTEGER REFERENCES organizations(id),
+            password_hash           TEXT,
+            must_change_password    INTEGER NOT NULL DEFAULT 0,
+            invite_token            TEXT,
+            invite_token_expires_at TEXT,
+            reset_token             TEXT,
+            reset_token_expires_at  TEXT
+          )
+        `).run()
+        db.prepare(`
+          INSERT INTO users
+            (id, name, email, role, organization, created_at, organization_id,
+             password_hash, must_change_password, invite_token, invite_token_expires_at,
+             reset_token, reset_token_expires_at)
+          SELECT
+            id, name, email, role, organization, created_at, organization_id,
+            password_hash, must_change_password, invite_token, invite_token_expires_at,
+            reset_token, reset_token_expires_at
+          FROM users_old
+        `).run()
+        db.prepare('DROP TABLE users_old').run()
+      })()
+      console.log("[db] Migration: rebuilt users table to add 'reviewer' to role CHECK constraint")
+    } finally {
+      try { db.exec('PRAGMA legacy_alter_table = OFF') } catch { /* Turso: not needed */ }
+      try { db.exec('PRAGMA foreign_keys = ON') } catch { /* Turso: not needed */ }
+    }
+  }
+
+  // ── Locations table ──────────────────────────────────────────────────────────
+  if (!tableExists(db, 'locations')) {
+    db.exec(`
+      CREATE TABLE locations (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        name            TEXT    NOT NULL,
+        organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(name, organization_id)
+      )
+    `)
+    console.log('[db] Migration: created locations table')
+  }
+
+  if (!tableExists(db, 'user_locations')) {
+    db.exec(`
+      CREATE TABLE user_locations (
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+        PRIMARY KEY (user_id, location_id)
+      )
+    `)
+    console.log('[db] Migration: created user_locations table')
+  }
+
+  // ── Repair user_locations FK if broken by ALTER TABLE users RENAME ───────────
+  // When legacy_alter_table is OFF (default on Turso), renaming `users` to
+  // `users_old` rewrites the FK in user_locations to reference `users_old`.
+  // After `users_old` is dropped the FK is dangling and every INSERT fails.
+  if (hasForeignKeyTarget(db, 'user_locations', 'users_old')) {
+    try {
+      const existing = db
+        .prepare('SELECT user_id, location_id FROM user_locations')
+        .all() as unknown as Array<{ user_id: number; location_id: number }>
+      db.exec('DROP TABLE user_locations')
+      db.exec(`
+        CREATE TABLE user_locations (
+          user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+          PRIMARY KEY (user_id, location_id)
+        )
+      `)
+      for (const row of existing) {
+        db.prepare('INSERT OR IGNORE INTO user_locations (user_id, location_id) VALUES (?, ?)').run(row.user_id, row.location_id)
+      }
+      console.log('[db] Migration: repaired user_locations FK (was referencing dropped users_old)')
+    } catch (repairErr) {
+      console.warn('[db] Could not repair user_locations FK:', (repairErr as Error).message)
+    }
+  }
+
+  // ── Add location_id to collections ──────────────────────────────────────────
+  const latestCollectionCols = db
+    .prepare(`PRAGMA table_info(collections)`)
+    .all() as unknown as { name: string }[]
+  const latestCollectionColNames = new Set(latestCollectionCols.map(c => c.name))
+
+  if (!latestCollectionColNames.has('location_id')) {
+    db.exec(`ALTER TABLE collections ADD COLUMN location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`)
+    console.log('[db] Migration: added collections.location_id')
+  }
+
+  // ── Add location_id to collection_responses ──────────────────────────────────
+  const latestResponseCols = db
+    .prepare(`PRAGMA table_info(collection_responses)`)
+    .all() as unknown as { name: string }[]
+  const latestResponseColNames = new Set(latestResponseCols.map(c => c.name))
+
+  if (!latestResponseColNames.has('location_id')) {
+    db.exec(`ALTER TABLE collection_responses ADD COLUMN location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`)
+    console.log('[db] Migration: added collection_responses.location_id')
+  }
 }

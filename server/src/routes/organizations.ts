@@ -247,13 +247,27 @@ router.delete('/:id', authenticateToken, (req: Request, res: Response) => {
     .prepare('SELECT COUNT(*) AS count FROM collections WHERE organization_id = ?')
     .get(id) as unknown as { count: number }
 
+  const categoryRef = db
+    .prepare('SELECT COUNT(*) AS count FROM categories WHERE organization_id = ?')
+    .get(id) as unknown as { count: number }
+
+  if (categoryRef.count > 0) {
+    res.status(409).json({ error: 'Delete all categories assigned to this organization before deleting it.' })
+    return
+  }
+
   if (userRef.count > 0 || collectionRef.count > 0) {
     res.status(409).json({ error: 'Organization cannot be deleted while users or collections are assigned to it' })
     return
   }
 
-  db.prepare('DELETE FROM organizations WHERE id = ?').run(id)
-  res.status(204).end()
+  try {
+    db.prepare('DELETE FROM organizations WHERE id = ?').run(id)
+    res.status(204).end()
+  } catch (err) {
+    console.error('[organizations] delete:', err)
+    res.status(500).json({ error: 'Failed to delete organization' })
+  }
 })
 
 export default router

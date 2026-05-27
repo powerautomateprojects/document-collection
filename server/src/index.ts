@@ -17,6 +17,7 @@ import statsRouter from './routes/stats'
 import mySubmissionsRouter from './routes/my-submissions'
 import healthRouter from './routes/health'
 import invitationsRouter from './routes/invitations'
+import locationsRouter from './routes/locations'
 import { dispatchPendingEmailNotifications, generateDueDateNotifications } from './services/notifications'
 
 const app = express()
@@ -88,6 +89,7 @@ app.use('/api/notifications', notificationsRouter)
 app.use('/api/stats', statsRouter)
 app.use('/api/my-submissions', mySubmissionsRouter)
 app.use('/api/invitations', invitationsRouter)
+app.use('/api/locations', locationsRouter)
 app.use('/api', healthRouter)
 
 // Health check for platform probes (non-API path)

@@ -24,7 +24,7 @@ import {
   updateCollection,
 } from '../api/collections'
 import { listCategories } from '../api/categories'
-import type { Category, Collection, CollectionField } from '../types'
+import type { Category, Collection, CollectionField, Location } from '../types'
 import type {
   ColType,
   CollectionStatus,
@@ -36,6 +36,7 @@ import type {
 import TableWizardModal from '../components/collections/TableWizardModal'
 import MatrixLikertConfigModal from '../components/collections/MatrixLikertConfigModal'
 import RichTextEditor from '../components/common/RichTextEditor'
+import { LocationTypeahead } from '../components/common/LocationTypeahead'
 import { toEmbedUrl } from '../utils/docPreviewUrl'
 import { htmlToPlainText } from '../utils/richText'
 import { useToast } from '../contexts/ToastContext'
@@ -190,6 +191,7 @@ export default function CollectionBuilderPage() {
   const [instructionsDocUrl, setInstructionsDocUrl] = useState('')
   const [allowSubmissionEdits, setAllowSubmissionEdits] = useState(false)
   const [submissionEditWindowHours, setSubmissionEditWindowHours] = useState('24')
+  const [selectedLocation, setSelectedLocation] = useState<Location | null>(null)
 
   // Fields
   const [fields, setFields] = useState<BuilderField[]>([blankField()])
@@ -249,6 +251,19 @@ export default function CollectionBuilderPage() {
     setAnonymous(col.anonymous)
     setAllowSubmissionEdits(col.allowSubmissionEdits)
     setSubmissionEditWindowHours(String(col.submissionEditWindowHours ?? 24))
+    // If the collection has a location, resolve its name from the server
+    if (col.locationId != null) {
+      import('../api/locations').then(({ searchLocations }) =>
+        searchLocations('').then(locs => {
+          const match = locs.find(l => l.id === col.locationId)
+          setSelectedLocation(match ?? { id: col.locationId!, name: `Location ${col.locationId}`, organizationId: 0, createdAt: '' })
+        }).catch(() => {
+          setSelectedLocation({ id: col.locationId!, name: `Location ${col.locationId}`, organizationId: 0, createdAt: '' })
+        })
+      ).catch(() => setSelectedLocation(null))
+    } else {
+      setSelectedLocation(null)
+    }
     setStatus(asTemplate ? 'draft' : (col.status ?? 'draft'))
     setInstructions(col.instructions ?? '')
     setInstructionsDocUrl(col.instructionsDocUrl ?? '')
@@ -590,6 +605,7 @@ export default function CollectionBuilderPage() {
       anonymous,
       allowSubmissionEdits,
       submissionEditWindowHours: allowSubmissionEdits ? normalizedHours : undefined,
+      locationId: selectedLocation?.id ?? null,
       fields: fields
         .filter(f => f.label.trim() !== '')
         .map((f, i) => ({
@@ -1166,7 +1182,7 @@ export default function CollectionBuilderPage() {
                 </button>
               </div>
 
-              <div className="pt-1 border-t border-[#E2E8F0] dark:border-[#334155]">
+              <div className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A] p-4">
                 <label className="flex items-center gap-3 text-sm text-[#1E293B] dark:text-[#F1F5F9] cursor-pointer">
                   <input
                     type="checkbox"
@@ -1179,26 +1195,39 @@ export default function CollectionBuilderPage() {
                 <p className="mt-1 text-xs text-[#64748B]">
                   Disabled by default. When enabled, users can edit their own submission for a limited time.
                 </p>
+                {allowSubmissionEdits && (
+                  <div className="mt-3 max-w-xs">
+                    <label htmlFor={`${formId}-edit-window`} className={LABEL}>
+                      Edit Window (hours)
+                    </label>
+                    <input
+                      id={`${formId}-edit-window`}
+                      type="number"
+                      min={1}
+                      max={168}
+                      step={1}
+                      value={submissionEditWindowHours}
+                      onChange={e => setSubmissionEditWindowHours(e.target.value)}
+                      className={INPUT}
+                    />
+                    <p className="mt-1 text-xs text-[#64748B]">Recommended: 24 to 36 hours.</p>
+                  </div>
+                )}
               </div>
 
-              {allowSubmissionEdits && (
+              <div className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A] p-4">
+                <label className={`${LABEL} mb-1`}>Restrict to Location</label>
+                <p className="mb-2 text-xs text-[#64748B]">
+                  Reviewers assigned to this location can view responses. Leave blank for no restriction.
+                </p>
                 <div className="max-w-xs">
-                  <label htmlFor={`${formId}-edit-window`} className={LABEL}>
-                    Edit Window (hours)
-                  </label>
-                  <input
-                    id={`${formId}-edit-window`}
-                    type="number"
-                    min={1}
-                    max={168}
-                    step={1}
-                    value={submissionEditWindowHours}
-                    onChange={e => setSubmissionEditWindowHours(e.target.value)}
-                    className={INPUT}
+                  <LocationTypeahead
+                    value={selectedLocation}
+                    onChange={setSelectedLocation}
+                    placeholder="Search locations…"
                   />
-                  <p className="mt-1 text-xs text-[#64748B]">Recommended: 24 to 36 hours.</p>
                 </div>
-              )}
+              </div>
             </div>
           )}
 

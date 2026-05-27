@@ -20,6 +20,7 @@ const ROLE_LABELS: Record<UserRole, string> = {
   super_admin: 'Super Admin',
   administrator: 'Administrator',
   team_manager: 'Team Manager',
+  reviewer: 'Reviewer',
   user: 'User',
 }
 

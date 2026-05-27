@@ -1,4 +1,4 @@
-export type UserRole = 'super_admin' | 'administrator' | 'team_manager' | 'user'
+export type UserRole = 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
 
 export interface User {
   id: number
@@ -100,6 +100,7 @@ export interface Collection {
   anonymous: boolean
   allowSubmissionEdits: boolean
   submissionEditWindowHours: number | null
+  locationId: number | null
   createdAt: string
   updatedAt: string
   fields: CollectionField[]
@@ -150,4 +151,11 @@ export interface AppNotification {
   actionUrl: string | null
   channel: 'in_app' | 'email'
   recipientRole: 'primary' | 'cc'
+}
+
+export interface Location {
+  id: number
+  name: string
+  organizationId: number
+  createdAt: string
 }

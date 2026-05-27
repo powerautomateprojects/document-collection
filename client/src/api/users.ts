@@ -4,7 +4,7 @@ export interface AppUser {
   id: number
   name: string
   email: string
-  role: 'super_admin' | 'administrator' | 'team_manager' | 'user'
+  role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
   organizationId: number | null
   organizationName: string | null
   organization?: string
@@ -28,7 +28,7 @@ export async function listUsers(): Promise<AppUser[]> {
 export async function createUser(payload: {
   name: string
   email: string
-  role?: 'super_admin' | 'administrator' | 'team_manager' | 'user'
+  role?: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
   organizationId: number
 }): Promise<AppUser> {
   const res = await fetch('/api/users', {
@@ -44,7 +44,7 @@ export async function updateUser(
   payload: {
     name: string
     email: string
-    role: 'super_admin' | 'administrator' | 'team_manager' | 'user'
+    role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
     organizationId: number
   }
 ): Promise<AppUser> {
@@ -71,7 +71,7 @@ export async function deleteUser(id: number): Promise<void> {
 export async function sendInvite(payload: {
   email: string
   name: string
-  role?: 'user' | 'team_manager' | 'administrator'
+  role?: 'user' | 'team_manager' | 'reviewer' | 'administrator'
 }): Promise<{ message: string; inviteLink?: string }> {
   const res = await fetch('/api/invitations', {
     method: 'POST',

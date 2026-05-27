@@ -20,6 +20,7 @@ export interface CollectionPayload {
   anonymous: boolean
   allowSubmissionEdits: boolean
   submissionEditWindowHours?: number
+  locationId?: number | null
   fields: Omit<CollectionField, 'id'>[]
 }
 

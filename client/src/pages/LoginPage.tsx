@@ -37,12 +37,23 @@ const FALLBACK_USERS: User[] = [
     organizationSlug: 'tsd',
     createdAt: '',
   },
+  {
+    id: 0,
+    name: 'Alex Kim',
+    email: 'alex@datacollectionpro.com',
+    role: 'reviewer',
+    organizationId: 1,
+    organizationName: 'TSD',
+    organizationSlug: 'tsd',
+    createdAt: '',
+  },
 ]
 
 const ROLE_LABELS: Record<UserRole, string> = {
   super_admin: 'SUPER ADMIN',
   administrator: 'ADMINISTRATOR',
   team_manager: 'TEAM MANAGER',
+  reviewer: 'REVIEWER',
   user: 'USER',
 }
 
