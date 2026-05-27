@@ -1959,6 +1959,7 @@ router.put('/:id/responses/:responseId/staff-fields', authenticateToken, (req: R
     res.status(400).json({ error: 'values array is required' })
     return
   }
+  const bodyValues = body.values
 
   try {
     const db = getDb()
@@ -1998,7 +1999,7 @@ router.put('/:id/responses/:responseId/staff-fields', authenticateToken, (req: R
 
     // Upsert values inside a transaction
     db.transaction(() => {
-      for (const val of body.values) {
+      for (const val of bodyValues) {
         const existing = db
           .prepare('SELECT id FROM collection_response_values WHERE response_id = ? AND field_id = ?')
           .get(responseId, val.fieldId) as { id: number } | undefined
