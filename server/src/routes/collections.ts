@@ -2128,4 +2128,129 @@ router.put('/:id/responses/:responseId/staff-fields', authenticateToken, (req: R
   }
 })
 
+// ── Submission Comments ────────────────────────────────────────────────────
+
+/**
+ * GET /api/collections/:id/responses/:responseId/comments
+ */
+router.get('/:id/responses/:responseId/comments', authenticateToken, (req: Request, res: Response): void => {
+  const id = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  if (isNaN(id) || isNaN(responseId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+
+  const context = loadRequestUserContext(req)
+  if (!context) { res.status(401).json({ error: 'Authentication required' }); return }
+  if (context.role === 'user') { res.status(403).json({ error: 'Staff access required' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(id, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const responseRow = db
+      .prepare('SELECT id FROM collection_responses WHERE id = ? AND collection_id = ?')
+      .get(responseId, id) as { id: number } | undefined
+    if (!responseRow) { res.status(404).json({ error: 'Response not found' }); return }
+
+    const comments = db
+      .prepare('SELECT id, user_id, user_name, body, created_at FROM submission_comments WHERE response_id = ? ORDER BY created_at ASC')
+      .all(responseId) as unknown as Array<{ id: number; user_id: number; user_name: string; body: string; created_at: string }>
+
+    res.json(comments.map(c => ({
+      id: c.id,
+      userId: c.user_id,
+      userName: c.user_name,
+      body: c.body,
+      createdAt: c.created_at,
+    })))
+  } catch (err) {
+    console.error('[collections] get comments:', err)
+    res.status(500).json({ error: 'Failed to load comments' })
+  }
+})
+
+/**
+ * POST /api/collections/:id/responses/:responseId/comments
+ */
+router.post('/:id/responses/:responseId/comments', authenticateToken, (req: Request, res: Response): void => {
+  const id = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  if (isNaN(id) || isNaN(responseId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+
+  const context = loadRequestUserContext(req)
+  if (!context) { res.status(401).json({ error: 'Authentication required' }); return }
+  if (context.role === 'user') { res.status(403).json({ error: 'Staff access required' }); return }
+
+  const body = (req.body as { body?: string }).body?.trim()
+  if (!body) { res.status(400).json({ error: 'Comment body is required' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(id, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const responseRow = db
+      .prepare('SELECT id FROM collection_responses WHERE id = ? AND collection_id = ?')
+      .get(responseId, id) as { id: number } | undefined
+    if (!responseRow) { res.status(404).json({ error: 'Response not found' }); return }
+
+    const userRow = db.prepare('SELECT name FROM users WHERE id = ?').get(context.id) as { name: string } | undefined
+    const userName = userRow?.name ?? 'Unknown'
+
+    const result = db
+      .prepare('INSERT INTO submission_comments (response_id, user_id, user_name, body) VALUES (?, ?, ?, ?)')
+      .run(responseId, context.id, userName, body) as { lastInsertRowid: number | bigint }
+
+    const comment = db
+      .prepare('SELECT id, user_id, user_name, body, created_at FROM submission_comments WHERE id = ?')
+      .get(Number(result.lastInsertRowid)) as { id: number; user_id: number; user_name: string; body: string; created_at: string }
+
+    res.status(201).json({
+      id: comment.id,
+      userId: comment.user_id,
+      userName: comment.user_name,
+      body: comment.body,
+      createdAt: comment.created_at,
+    })
+  } catch (err) {
+    console.error('[collections] add comment:', err)
+    res.status(500).json({ error: 'Failed to add comment' })
+  }
+})
+
+/**
+ * DELETE /api/collections/:id/responses/:responseId/comments/:commentId
+ * Own comments only (admins/super_admin can delete any).
+ */
+router.delete('/:id/responses/:responseId/comments/:commentId', authenticateToken, (req: Request, res: Response): void => {
+  const id = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  const commentId = parseInt(req.params.commentId, 10)
+  if (isNaN(id) || isNaN(responseId) || isNaN(commentId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+
+  const context = loadRequestUserContext(req)
+  if (!context) { res.status(401).json({ error: 'Authentication required' }); return }
+  if (context.role === 'user') { res.status(403).json({ error: 'Staff access required' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(id, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const comment = db
+      .prepare('SELECT id, user_id FROM submission_comments WHERE id = ? AND response_id = ?')
+      .get(commentId, responseId) as { id: number; user_id: number } | undefined
+    if (!comment) { res.status(404).json({ error: 'Comment not found' }); return }
+
+    const canDelete = context.role === 'super_admin' || context.role === 'administrator' || comment.user_id === context.id
+    if (!canDelete) { res.status(403).json({ error: 'Not allowed to delete this comment' }); return }
+
+    db.prepare('DELETE FROM submission_comments WHERE id = ?').run(commentId)
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[collections] delete comment:', err)
+    res.status(500).json({ error: 'Failed to delete comment' })
+  }
+})
+
 export default router

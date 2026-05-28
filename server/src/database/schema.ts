@@ -250,6 +250,17 @@ export function createSchema(db: AppDatabase): void {
       PRIMARY KEY (user_id, key)
     );
   `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS submission_comments (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      response_id INTEGER NOT NULL REFERENCES collection_responses(id) ON DELETE CASCADE,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      user_name   TEXT    NOT NULL,
+      body        TEXT    NOT NULL,
+      created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
 }
 
 export function seedData(db: AppDatabase): void {

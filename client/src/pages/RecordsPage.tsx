@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Calendar, ClipboardList, LayoutGrid, Lock, Mail, Save, Table2, Tag, User, Download } from 'lucide-react'
-import { getCollection, getResponses, listCollections, upsertStaffFields } from '../api/collections'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Calendar, ClipboardList, LayoutGrid, Lock, Mail, MessageSquare, Save, Table2, Tag, Trash2, User, Download } from 'lucide-react'
+import { getCollection, getComments, addComment, deleteComment, getResponses, listCollections, upsertStaffFields } from '../api/collections'
 import { getCategoryColorClasses } from '../utils/categoryColors'
-import type { Collection, CollectionField, CollectionResponse } from '../types'
+import type { Collection, CollectionField, CollectionResponse, SubmissionComment } from '../types'
+import { useAuth } from '../contexts/AuthContext'
 
 type RecordsView = 'summary' | 'individual'
 
@@ -745,6 +746,7 @@ function StaffFieldEditor({
 }
 
 export default function RecordsPage() {
+  const { user } = useAuth()
   const [collections, setCollections] = useState<Collection[]>([])
   const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null)
   const [selectedCollection, setSelectedCollection] = useState<Collection | null>(null)
@@ -757,7 +759,12 @@ export default function RecordsPage() {
   const [expandedStaffResponseId, setExpandedStaffResponseId] = useState<number | null>(null)
   const [staffEdits, setStaffEdits] = useState<Record<number, Record<number, string>>>({})
   const [staffSaveState, setStaffSaveState] = useState<Record<number, 'idle' | 'saving' | 'saved' | 'error'>>({})
-
+  // Comments
+  const [submissionTab, setSubmissionTab] = useState<Record<number, 'general' | 'comments'>>({})
+  const [commentsByResponse, setCommentsByResponse] = useState<Record<number, SubmissionComment[]>>({})
+  const [newCommentText, setNewCommentText] = useState<Record<number, string>>({})
+  const [commentSubmitting, setCommentSubmitting] = useState<Record<number, boolean>>({})
+  const commentPollRef = useRef<Record<number, ReturnType<typeof setInterval>>>({})
   useEffect(() => {
     listCollections()
       .then(items => {
@@ -795,6 +802,67 @@ export default function RecordsPage() {
     () => (selectedCollection?.fields ?? []).filter(f => f.staffOnly),
     [selectedCollection]
   )
+
+  // ── Comments helpers ───────────────────────────────────────────────────────
+
+  function loadComments(responseId: number) {
+    if (!selectedCollection?.id) return
+    getComments(selectedCollection.id, responseId)
+      .then(items => setCommentsByResponse(prev => ({ ...prev, [responseId]: items })))
+      .catch(() => {/* silently ignore poll errors */})
+  }
+
+  function openCommentsTab(responseId: number) {
+    setSubmissionTab(prev => ({ ...prev, [responseId]: 'comments' }))
+    loadComments(responseId)
+    // Start 60-second poll if not already running
+    if (!commentPollRef.current[responseId]) {
+      commentPollRef.current[responseId] = setInterval(() => loadComments(responseId), 60_000)
+    }
+  }
+
+  function closeCommentsTab(responseId: number) {
+    setSubmissionTab(prev => ({ ...prev, [responseId]: 'general' }))
+    clearInterval(commentPollRef.current[responseId])
+    delete commentPollRef.current[responseId]
+  }
+
+  // Clean up all intervals when collection changes or unmount
+  useEffect(() => {
+    return () => {
+      Object.values(commentPollRef.current).forEach(clearInterval)
+      commentPollRef.current = {}
+    }
+  }, [selectedCollectionId])
+
+  async function handleAddComment(responseId: number) {
+    if (!selectedCollection?.id) return
+    const text = (newCommentText[responseId] ?? '').trim()
+    if (!text) return
+    setCommentSubmitting(prev => ({ ...prev, [responseId]: true }))
+    try {
+      const comment = await addComment(selectedCollection.id, responseId, text)
+      setCommentsByResponse(prev => ({ ...prev, [responseId]: [...(prev[responseId] ?? []), comment] }))
+      setNewCommentText(prev => ({ ...prev, [responseId]: '' }))
+    } catch (err) {
+      console.error('[RecordsPage] addComment:', err)
+    } finally {
+      setCommentSubmitting(prev => ({ ...prev, [responseId]: false }))
+    }
+  }
+
+  async function handleDeleteComment(responseId: number, commentId: number) {
+    if (!selectedCollection?.id) return
+    try {
+      await deleteComment(selectedCollection.id, responseId, commentId)
+      setCommentsByResponse(prev => ({
+        ...prev,
+        [responseId]: (prev[responseId] ?? []).filter(c => c.id !== commentId),
+      }))
+    } catch (err) {
+      console.error('[RecordsPage] deleteComment:', err)
+    }
+  }
 
   async function handleSaveStaffNotes(responseId: number) {
     if (!selectedCollection?.id) return
@@ -1385,7 +1453,10 @@ export default function RecordsPage() {
 
       {!loadingResponses && selectedCollection && responses.length > 0 && view === 'individual' && individualLayout === 'card' && (
         <div className="space-y-4">
-          {responses.map(response => (
+          {responses.map(response => {
+            const activeTab = submissionTab[response.id] ?? 'general'
+            const comments = commentsByResponse[response.id] ?? []
+            return (
             <section
               key={response.id}
               className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg p-5 space-y-4"
@@ -1414,6 +1485,28 @@ export default function RecordsPage() {
                 </div>
               </div>
 
+              {/* Tab bar */}
+              <div className="flex gap-1 border-b border-[#E2E8F0] dark:border-[#334155]">
+                <button
+                  type="button"
+                  onClick={() => closeCommentsTab(response.id)}
+                  className={`px-3 py-1.5 text-sm font-medium border-b-2 transition-colors -mb-px ${activeTab === 'general' ? 'border-[#2563EB] text-[#2563EB]' : 'border-transparent text-[#64748B] hover:text-[#1E293B] dark:hover:text-[#F1F5F9]'}`}
+                >
+                  General
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openCommentsTab(response.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border-b-2 transition-colors -mb-px ${activeTab === 'comments' ? 'border-[#2563EB] text-[#2563EB]' : 'border-transparent text-[#64748B] hover:text-[#1E293B] dark:hover:text-[#F1F5F9]'}`}
+                >
+                  <MessageSquare size={13} />
+                  Comments{comments.length > 0 && <span className="ml-0.5 text-xs bg-[#2563EB] text-white rounded-full px-1.5 py-0.5 leading-none">{comments.length}</span>}
+                </button>
+              </div>
+
+              {/* General tab */}
+              {activeTab === 'general' && (
+                <>
               {response.values.length === 0 ? (
                 <p className="text-sm text-[#64748B]">No field values were submitted.</p>
               ) : (
@@ -1559,8 +1652,72 @@ export default function RecordsPage() {
                   )}
                 </div>
               )}
+                </>
+              )}
+
+              {/* Comments tab */}
+              {activeTab === 'comments' && (
+                <div className="space-y-4">
+                  {comments.length === 0 ? (
+                    <p className="text-sm text-[#94A3B8] italic">No comments yet. Be the first to add one.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {comments.map(comment => {
+                        const isOwn = comment.userId === user?.id
+                        const canDelete = isOwn || user?.role === 'administrator' || user?.role === 'super_admin'
+                        const initials = comment.userName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+                        const normalized = comment.createdAt.includes('T') ? comment.createdAt : comment.createdAt.replace(' ', 'T') + 'Z'
+                        const dateLabel = new Date(normalized).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+                        return (
+                          <div key={comment.id} className="flex gap-3">
+                            <div className="w-8 h-8 rounded-full bg-[#2563EB] text-white flex items-center justify-center text-xs font-semibold shrink-0">
+                              {initials}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9]">{comment.userName}</span>
+                                <span className="text-xs text-[#94A3B8]">{dateLabel}</span>
+                                {canDelete && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDeleteComment(response.id, comment.id)}
+                                    className="ml-auto text-[#CBD5E1] hover:text-red-400 transition-colors"
+                                    title="Delete comment"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                )}
+                              </div>
+                              <p className="mt-0.5 text-sm text-[#475569] dark:text-[#94A3B8] whitespace-pre-wrap break-words">{comment.body}</p>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                  <div className="flex gap-2 pt-1 border-t border-[#E2E8F0] dark:border-[#334155]">
+                    <textarea
+                      rows={2}
+                      placeholder="Add a comment…"
+                      value={newCommentText[response.id] ?? ''}
+                      onChange={e => setNewCommentText(prev => ({ ...prev, [response.id]: e.target.value }))}
+                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void handleAddComment(response.id) } }}
+                      className="flex-1 resize-none rounded border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#0F172A] text-sm text-[#1E293B] dark:text-[#F1F5F9] placeholder-[#94A3B8] px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+                    />
+                    <button
+                      type="button"
+                      disabled={!(newCommentText[response.id] ?? '').trim() || commentSubmitting[response.id]}
+                      onClick={() => void handleAddComment(response.id)}
+                      className="self-end px-3 py-2 rounded bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-40 text-white text-sm font-medium transition-colors"
+                    >
+                      {commentSubmitting[response.id] ? '…' : 'Post'}
+                    </button>
+                  </div>
+                </div>
+              )}
             </section>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>

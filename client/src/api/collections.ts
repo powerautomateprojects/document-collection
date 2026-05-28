@@ -4,6 +4,7 @@ import type {
   CollectionResponse,
   CollectionStatus,
   CollectionVersion,
+  SubmissionComment,
 } from '../types'
 import { authHeaders, handleUnauthorizedResponse } from './authEvents'
 
@@ -176,4 +177,28 @@ export async function seedCollectionData(
     body: JSON.stringify(payload),
   })
   return handleResponse<{ created: number; collectionId: number; collectionTitle: string }>(res)
+}
+
+export async function getComments(collectionId: number, responseId: number): Promise<SubmissionComment[]> {
+  const res = await fetch(`/api/collections/${collectionId}/responses/${responseId}/comments`, {
+    headers: authHeaders(),
+  })
+  return handleResponse<SubmissionComment[]>(res)
+}
+
+export async function addComment(collectionId: number, responseId: number, body: string): Promise<SubmissionComment> {
+  const res = await fetch(`/api/collections/${collectionId}/responses/${responseId}/comments`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ body }),
+  })
+  return handleResponse<SubmissionComment>(res)
+}
+
+export async function deleteComment(collectionId: number, responseId: number, commentId: number): Promise<void> {
+  const res = await fetch(`/api/collections/${collectionId}/responses/${responseId}/comments/${commentId}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  return handleResponse<void>(res)
 }

@@ -127,6 +127,14 @@ export interface CollectionResponse {
   values: { fieldId: number; value: string | null; staffUpdatedByName?: string | null; staffUpdatedAt?: string | null }[]
 }
 
+export interface SubmissionComment {
+  id: number
+  userId: number
+  userName: string
+  body: string
+  createdAt: string
+}
+
 export interface Category {
   id: number
   name: string
