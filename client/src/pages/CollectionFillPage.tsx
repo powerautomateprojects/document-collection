@@ -2233,7 +2233,6 @@ function FieldRenderer({
             required={required}
             disabled={disabled}
           />
-          <span className="text-sm text-[#475569] dark:text-[#94A3B8]">{field.label}</span>
         </label>
       )}
 
