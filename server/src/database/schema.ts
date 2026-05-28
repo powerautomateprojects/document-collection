@@ -75,7 +75,6 @@ export function createSchema(db: AppDatabase): void {
       anonymous            INTEGER NOT NULL DEFAULT 0,
       allow_submission_edits INTEGER NOT NULL DEFAULT 0,
       submission_edit_window_hours INTEGER,
-      location_id          INTEGER REFERENCES locations(id) ON DELETE SET NULL,
       created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
       updated_at           TEXT    NOT NULL DEFAULT (datetime('now'))
     );
@@ -137,7 +136,6 @@ export function createSchema(db: AppDatabase): void {
       respondent_email TEXT,
       editable_until   TEXT,
       last_edited_at   TEXT,
-      location_id      INTEGER REFERENCES locations(id) ON DELETE SET NULL,
       submitted_at     TEXT    NOT NULL DEFAULT (datetime('now'))
     );
   `)

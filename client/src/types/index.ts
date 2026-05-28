@@ -101,7 +101,6 @@ export interface Collection {
   anonymous: boolean
   allowSubmissionEdits: boolean
   submissionEditWindowHours: number | null
-  locationId: number | null
   createdAt: string
   updatedAt: string
   fields: CollectionField[]

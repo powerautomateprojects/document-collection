@@ -308,6 +308,24 @@ export function setupDatabase(): void {
 }
 
 function runMigrations(db: AppDatabase): void {
+  // ── Migration tracking table ─────────────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id         TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `)
+  const appliedMigrations = new Set(
+    (db.prepare('SELECT id FROM schema_migrations').all() as Array<{ id: string }>).map(r => r.id)
+  )
+  function hasRun(migrationId: string): boolean {
+    return appliedMigrations.has(migrationId)
+  }
+  function markRan(migrationId: string): void {
+    db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(migrationId)
+    appliedMigrations.add(migrationId)
+  }
+
   const organizationsExists = db
     .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='organizations'`)
     .get()
@@ -601,6 +619,7 @@ function runMigrations(db: AppDatabase): void {
   }
 
   // Backfill collection versions and version links for legacy data.
+  if (!hasRun('backfill-collection-versions')) {
   db.transaction(() => {
     const cols = db.prepare(`SELECT id, status, created_by, active_version_id FROM collections`).all() as unknown as Array<{
       id: number
@@ -654,6 +673,8 @@ function runMigrations(db: AppDatabase): void {
         .run(creator?.organization_id ?? defaultOrganizationId, col.id)
     }
   })()
+  markRan('backfill-collection-versions')
+  }
 
   // Ensure app_settings table exists (for DBs created before this feature)
   const settingsExists = db
@@ -741,7 +762,7 @@ function runMigrations(db: AppDatabase): void {
     console.log('[db] Migration: created notification_email_ccs table')
   }
 
-  if (tableExists(db, 'notifications')) {
+  if (tableExists(db, 'notifications') && !hasRun('migrate-legacy-notifications')) {
     db.transaction(() => {
       const legacyNotifications = db
         .prepare(`
@@ -813,6 +834,7 @@ function runMigrations(db: AppDatabase): void {
         )
       }
     })()
+    markRan('migrate-legacy-notifications')
   }
 
   // ── Categories: add organization_id and enforce per-org uniqueness ──────────
@@ -1079,25 +1101,4 @@ function runMigrations(db: AppDatabase): void {
     }
   }
 
-  // ── Add location_id to collections ──────────────────────────────────────────
-  const latestCollectionCols = db
-    .prepare(`PRAGMA table_info(collections)`)
-    .all() as unknown as { name: string }[]
-  const latestCollectionColNames = new Set(latestCollectionCols.map(c => c.name))
-
-  if (!latestCollectionColNames.has('location_id')) {
-    db.exec(`ALTER TABLE collections ADD COLUMN location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`)
-    console.log('[db] Migration: added collections.location_id')
-  }
-
-  // ── Add location_id to collection_responses ──────────────────────────────────
-  const latestResponseCols = db
-    .prepare(`PRAGMA table_info(collection_responses)`)
-    .all() as unknown as { name: string }[]
-  const latestResponseColNames = new Set(latestResponseCols.map(c => c.name))
-
-  if (!latestResponseColNames.has('location_id')) {
-    db.exec(`ALTER TABLE collection_responses ADD COLUMN location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`)
-    console.log('[db] Migration: added collection_responses.location_id')
-  }
 }

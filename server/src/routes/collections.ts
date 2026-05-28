@@ -66,7 +66,6 @@ interface DbCollection {
   anonymous: number
   allow_submission_edits: number
   submission_edit_window_hours: number | null
-  location_id: number | null
   created_at: string
   updated_at: string
   creator_name?: string
@@ -318,6 +317,11 @@ function fetchAccessibleCollectionById(
   context: RequestUserContext,
 ): DbCollection | undefined {
   const db = getDb()
+  if (isAdministrator(context)) {
+    return db
+      .prepare(`${COL_SELECT} WHERE c.id = ?`)
+      .get(id) as unknown as DbCollection | undefined
+  }
   return db
     .prepare(`${COL_SELECT} WHERE c.id = ? AND c.organization_id = ?`)
     .get(id, context.organizationId) as unknown as DbCollection | undefined
@@ -352,7 +356,6 @@ function toApiCollection(
     anonymous: c.anonymous === 1,
     allowSubmissionEdits: c.allow_submission_edits === 1,
     submissionEditWindowHours: c.submission_edit_window_hours,
-    locationId: c.location_id,
     createdAt: c.created_at,
     updatedAt: c.updated_at,
     fields: fields.map(f => ({
@@ -1220,19 +1223,29 @@ router.get('/', authenticateToken, (_req: Request, res: Response) => {
     .prepare(`${COL_SELECT} WHERE c.organization_id = ? ORDER BY c.created_at DESC`)
     .all(context.organizationId) as unknown as DbCollection[]
 
-  const result = cols.map(c => {
-    const { n } = db
-      .prepare(
-        'SELECT COUNT(*) AS n FROM collection_responses WHERE collection_id = ?'
-      )
-      .get(c.id) as { n: number }
-    const { ct } = db
-      .prepare(
-        "SELECT COUNT(*) AS ct FROM collection_fields WHERE collection_id = ? AND version_id = ? AND type = 'custom_table'"
-      )
-      .get(c.id, c.active_version_id) as { ct: number }
-    return { ...toApiCollection(c, [], new Map()), responseCount: n, hasCustomTable: ct > 0 }
-  })
+  if (cols.length === 0) {
+    res.json([])
+    return
+  }
+
+  const ids = cols.map(c => c.id)
+  const ph = ids.map(() => '?').join(',')
+
+  const responseCounts = db
+    .prepare(`SELECT collection_id, COUNT(*) AS n FROM collection_responses WHERE collection_id IN (${ph}) GROUP BY collection_id`)
+    .all(...ids) as unknown as Array<{ collection_id: number; n: number }>
+  const responseCountMap = new Map(responseCounts.map(r => [r.collection_id, r.n]))
+
+  const customTableFlags = db
+    .prepare(`SELECT collection_id, COUNT(*) AS ct FROM collection_fields WHERE collection_id IN (${ph}) AND type = 'custom_table' GROUP BY collection_id`)
+    .all(...ids) as unknown as Array<{ collection_id: number; ct: number }>
+  const customTableMap = new Map(customTableFlags.map(r => [r.collection_id, r.ct]))
+
+  const result = cols.map(c => ({
+    ...toApiCollection(c, [], new Map()),
+    responseCount: responseCountMap.get(c.id) ?? 0,
+    hasCustomTable: (customTableMap.get(c.id) ?? 0) > 0,
+  }))
   res.json(result)
 })
 
@@ -1302,8 +1315,8 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
         `INSERT INTO collections
            (slug, title, status, description, category, created_by, date_due, cover_photo_url,
             logo_url, instructions, instructions_doc_url, organization_id, anonymous, allow_submission_edits,
-            submission_edit_window_hours, location_id, active_version_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
+            submission_edit_window_hours, active_version_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
       )
       .run(
         slug,
@@ -1320,8 +1333,7 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
         organization.id,
         body.anonymous ? 1 : 0,
         editSettings.allowSubmissionEdits ? 1 : 0,
-        editSettings.submissionEditWindowHours,
-        body.locationId ?? null
+        editSettings.submissionEditWindowHours
       )
 
     const id = r.lastInsertRowid as number
@@ -1526,7 +1538,7 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
       `UPDATE collections
          SET title = ?, status = ?, description = ?, category = ?, date_due = ?, cover_photo_url = ?,
            logo_url = ?, instructions = ?, instructions_doc_url = ?, organization_id = ?, anonymous = ?, allow_submission_edits = ?,
-           submission_edit_window_hours = ?, location_id = ?, active_version_id = ?,
+           submission_edit_window_hours = ?, active_version_id = ?,
            updated_at = datetime('now')
        WHERE id = ?`
     ).run(
@@ -1543,7 +1555,6 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
       body.anonymous ? 1 : 0,
       editSettings.allowSubmissionEdits ? 1 : 0,
       editSettings.submissionEditWindowHours,
-      body.locationId ?? null,
       targetVersionId,
       id
     )

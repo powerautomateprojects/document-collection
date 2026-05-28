@@ -8,6 +8,18 @@ import { sendNotificationEmail, isEmailDeliveryConfigured } from '../services/no
 
 const router = Router()
 
+const COOKIE_MAX_AGE_MS = 8 * 60 * 60 * 1000 // 8 hours
+
+function setAuthCookie(res: Response, token: string): void {
+  res.cookie('dcp-token', token, {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    maxAge: COOKIE_MAX_AGE_MS,
+  })
+}
+
 interface DbUser {
   id: number
   name: string
@@ -125,8 +137,23 @@ router.post('/login', (req: Request, res: Response) => {
   }
 
   const token = signUserToken(user)
-
+  setAuthCookie(res, token)
   res.json({ token, user: toApiUser(user) })
+})
+
+/**
+ * @swagger
+ * /api/auth/logout:
+ *   post:
+ *     summary: Sign out and clear the auth cookie
+ *     tags: [Auth]
+ *     responses:
+ *       200:
+ *         description: Logged out
+ */
+router.post('/logout', (_req: Request, res: Response) => {
+  res.clearCookie('dcp-token', { path: '/' })
+  res.json({ message: 'Logged out' })
 })
 
 /**
@@ -240,7 +267,7 @@ router.post('/register', authenticateToken, (req: Request, res: Response) => {
     .get(insertedId) as unknown as DbUser
 
   const token = signUserToken(newUser)
-
+  setAuthCookie(res, token)
   res.status(201).json({ token, user: toApiUser(newUser) })
 })
 
@@ -319,6 +346,7 @@ router.post('/login-with-password', (req: Request, res: Response) => {
   }
 
   const token = signUserToken(user)
+  setAuthCookie(res, token)
   res.json({ token, user: toApiUser(user) })
 })
 

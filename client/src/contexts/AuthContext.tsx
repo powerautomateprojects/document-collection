@@ -11,72 +11,30 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
-interface StoredSession {
-  user: User | null
-  token: string | null
-}
-
-function parseJwtExpiry(token: string): number | null {
-  try {
-    const [, payload] = token.split('.')
-    if (!payload) return null
-
-    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
-    const decoded = JSON.parse(atob(padded)) as { exp?: unknown }
-
-    return typeof decoded.exp === 'number' ? decoded.exp : null
-  } catch {
-    return null
-  }
-}
-
-function loadStoredSession(): StoredSession {
-  try {
-    const rawUser = localStorage.getItem('dcp-user')
-    const rawToken = localStorage.getItem('dcp-token')
-
-    if (!rawUser || !rawToken) {
-      localStorage.removeItem('dcp-user')
-      localStorage.removeItem('dcp-token')
-      return { user: null, token: null }
-    }
-
-    const expiresAt = parseJwtExpiry(rawToken)
-    if (!expiresAt || expiresAt * 1000 <= Date.now()) {
-      localStorage.removeItem('dcp-user')
-      localStorage.removeItem('dcp-token')
-      return { user: null, token: null }
-    }
-
-    return {
-      user: JSON.parse(rawUser) as User,
-      token: rawToken,
-    }
-  } catch {
-    localStorage.removeItem('dcp-user')
-    localStorage.removeItem('dcp-token')
-    return { user: null, token: null }
-  }
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const initialSession = loadStoredSession()
-  const [user, setUser] = useState<User | null>(initialSession.user)
-  const [token, setToken] = useState<string | null>(initialSession.token)
+  const [user, setUser] = useState<User | null>(() => {
+    // Restore user profile from localStorage cache (non-sensitive display data only)
+    try {
+      const raw = localStorage.getItem('dcp-user')
+      return raw ? (JSON.parse(raw) as User) : null
+    } catch {
+      return null
+    }
+  })
 
-  const signIn = (u: User, t: string) => {
+  // token is always null — auth is handled by HttpOnly cookie
+  const token: string | null = null
+
+  const signIn = (u: User, _token: string) => {
     setUser(u)
-    setToken(t)
     localStorage.setItem('dcp-user', JSON.stringify(u))
-    localStorage.setItem('dcp-token', t)
   }
 
   const signOut = () => {
     setUser(null)
-    setToken(null)
     localStorage.removeItem('dcp-user')
-    localStorage.removeItem('dcp-token')
+    // Clear the HttpOnly cookie via the logout endpoint
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {})
   }
 
   useEffect(() => {
@@ -88,17 +46,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired)
   }, [])
 
-  // Refresh user profile on startup so stored data stays up to date
+  // Validate session with server on startup and refresh the user profile
   useEffect(() => {
-    if (!initialSession.token) return
-    fetch('/api/auth/me', {
-      headers: { Authorization: `Bearer ${initialSession.token}` },
-    })
+    fetch('/api/auth/me', { credentials: 'include' })
       .then(res => (res.ok ? (res.json() as Promise<User>) : null))
       .then(freshUser => {
         if (freshUser) {
           setUser(freshUser)
           localStorage.setItem('dcp-user', JSON.stringify(freshUser))
+        } else {
+          // Cookie is expired or invalid — clear stale user cache
+          setUser(null)
+          localStorage.removeItem('dcp-user')
         }
       })
       .catch(() => { /* silently ignore — stale data is fine */ })

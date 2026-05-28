@@ -1838,6 +1838,7 @@ export default function CollectionFillPage() {
                         value={values[field.id] ?? ''}
                         onChange={v => setValue(field.id!, v)}
                         disabled={false}
+                        collectionSlug={slug ?? ''}
                       />
                     ) : null
                   )}
@@ -1931,20 +1932,22 @@ function LocationFieldInput({
   value,
   onChange,
   disabled,
+  collectionSlug,
 }: {
   value: string
   onChange: (v: string) => void
   disabled: boolean
+  collectionSlug: string
 }) {
   const [locations, setLocations] = useState<{ id: number; name: string }[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    getPublicLocations()
+    getPublicLocations(collectionSlug)
       .then(locs => setLocations(locs))
       .catch(() => setLocations([]))
       .finally(() => setLoading(false))
-  }, [])
+  }, [collectionSlug])
 
   if (loading) {
     return <p className="text-sm text-[#94A3B8]">Loading locations…</p>
@@ -1974,11 +1977,13 @@ function FieldRenderer({
   value,
   onChange,
   disabled,
+  collectionSlug,
 }: {
   field: CollectionField
   value: string
   onChange: (v: string) => void
   disabled: boolean
+  collectionSlug: string
 }) {
   const required = field.required && !disabled
   const optionList = field.options ?? []
@@ -2279,7 +2284,7 @@ function FieldRenderer({
       )}
 
       {field.type === 'location' && (
-        <LocationFieldInput value={value} onChange={onChange} disabled={disabled} />
+        <LocationFieldInput value={value} onChange={onChange} disabled={disabled} collectionSlug={collectionSlug} />
       )}
     </div>
   )

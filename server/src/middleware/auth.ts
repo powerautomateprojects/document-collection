@@ -25,11 +25,14 @@ export function authenticateToken(
   res: Response,
   next: NextFunction
 ): void {
+  // Prefer HttpOnly cookie; fall back to Authorization header (for Swagger/API tools)
+  const cookieToken = (req.cookies as Record<string, string | undefined>)?.['dcp-token']
   const authHeader = req.headers.authorization
-  const token =
+  const bearerToken =
     authHeader && authHeader.startsWith('Bearer ')
       ? authHeader.slice(7)
       : null
+  const token = cookieToken ?? bearerToken
 
   if (!token) {
     res.status(401).json({ error: 'Authentication required' })

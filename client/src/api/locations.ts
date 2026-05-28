@@ -4,8 +4,9 @@ import { authHeaders, handleUnauthorizedResponse } from './authEvents'
 const API_BASE = '/api/locations'
 
 /** Public (no auth) — used by the fill page to populate the Location field dropdown. */
-export async function getPublicLocations(): Promise<Location[]> {
-  const res = await fetch(API_BASE)
+export async function getPublicLocations(slug: string): Promise<Location[]> {
+  const params = new URLSearchParams({ slug })
+  const res = await fetch(`${API_BASE}?${params}`)
   if (!res.ok) throw new Error('Failed to fetch locations')
   return res.json() as Promise<Location[]>
 }

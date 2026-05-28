@@ -17,49 +17,48 @@ router.get('/', (req: Request, res: Response) => {
   const db = getDb()
   const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
 
-  // If authenticated, scope to the caller's organization; otherwise return all.
+  // If authenticated, scope to the caller's organization.
+  // If unauthenticated, require a collection slug to determine the organization.
   const context = loadRequestUserContext(req)
   const orgId = context?.organizationId ?? null
 
-  let rows: DbLocation[]
-  if (orgId !== null) {
-    rows = q
-      ? db
-          .prepare(
-            `SELECT id, name, organization_id, created_at
-             FROM locations
-             WHERE organization_id = ? AND lower(name) LIKE lower(?)
-             ORDER BY lower(name)
-             LIMIT 20`
-          )
-          .all(orgId, `%${q}%`) as unknown as DbLocation[]
-      : db
-          .prepare(
-            `SELECT id, name, organization_id, created_at
-             FROM locations
-             WHERE organization_id = ?
-             ORDER BY lower(name)`
-          )
-          .all(orgId) as unknown as DbLocation[]
-  } else {
-    rows = q
-      ? db
-          .prepare(
-            `SELECT id, name, organization_id, created_at
-             FROM locations
-             WHERE lower(name) LIKE lower(?)
-             ORDER BY lower(name)
-             LIMIT 20`
-          )
-          .all(`%${q}%`) as unknown as DbLocation[]
-      : db
-          .prepare(
-            `SELECT id, name, organization_id, created_at
-             FROM locations
-             ORDER BY lower(name)`
-          )
-          .all() as unknown as DbLocation[]
+  let resolvedOrgId: number | null = orgId
+
+  if (resolvedOrgId === null) {
+    const slug = typeof req.query.slug === 'string' ? req.query.slug.trim() : ''
+    if (!slug) {
+      res.status(400).json({ error: 'slug parameter required for unauthenticated access' })
+      return
+    }
+    const col = db
+      .prepare('SELECT organization_id FROM collections WHERE slug = ?')
+      .get(slug) as unknown as { organization_id: number } | undefined
+    if (!col) {
+      res.status(404).json({ error: 'Collection not found' })
+      return
+    }
+    resolvedOrgId = col.organization_id
   }
+
+  let rows: DbLocation[]
+  rows = q
+    ? db
+        .prepare(
+          `SELECT id, name, organization_id, created_at
+           FROM locations
+           WHERE organization_id = ? AND lower(name) LIKE lower(?)
+           ORDER BY lower(name)
+           LIMIT 20`
+        )
+        .all(resolvedOrgId, `%${q}%`) as unknown as DbLocation[]
+    : db
+        .prepare(
+          `SELECT id, name, organization_id, created_at
+           FROM locations
+           WHERE organization_id = ?
+           ORDER BY lower(name)`
+        )
+        .all(resolvedOrgId) as unknown as DbLocation[]
 
   res.json(
     rows.map(l => ({
