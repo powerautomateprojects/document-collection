@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import { getDb } from '../database/db'
-import { authenticateToken } from '../middleware/auth'
+import { authenticateToken, optionalAuthenticateToken } from '../middleware/auth'
 import { loadRequestUserContext } from '../middleware/organizationAccess'
 
 const router = Router()
@@ -13,18 +13,21 @@ interface DbLocation {
 }
 
 // ── GET /api/locations — list / typeahead search (public) ────
-router.get('/', (req: Request, res: Response) => {
+router.get('/', optionalAuthenticateToken, (req: Request, res: Response) => {
   const db = getDb()
   const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
 
-  // If authenticated, scope to the caller's organization.
+  // If authenticated, scope to the caller's organization (or all orgs for super_admin).
   // If unauthenticated, require a collection slug to determine the organization.
   const context = loadRequestUserContext(req)
-  const orgId = context?.organizationId ?? null
 
-  let resolvedOrgId: number | null = orgId
+  let resolvedOrgId: number | null | 'all' = null
 
-  if (resolvedOrgId === null) {
+  if (context) {
+    // Authenticated — use org scope (null org = super_admin, sees all)
+    resolvedOrgId = context.organizationId ?? 'all'
+  } else {
+    // Unauthenticated — require ?slug= to scope by collection org
     const slug = typeof req.query.slug === 'string' ? req.query.slug.trim() : ''
     if (!slug) {
       res.status(400).json({ error: 'slug parameter required for unauthenticated access' })
@@ -41,24 +44,44 @@ router.get('/', (req: Request, res: Response) => {
   }
 
   let rows: DbLocation[]
-  rows = q
-    ? db
-        .prepare(
-          `SELECT id, name, organization_id, created_at
-           FROM locations
-           WHERE organization_id = ? AND lower(name) LIKE lower(?)
-           ORDER BY lower(name)
-           LIMIT 20`
-        )
-        .all(resolvedOrgId, `%${q}%`) as unknown as DbLocation[]
-    : db
-        .prepare(
-          `SELECT id, name, organization_id, created_at
-           FROM locations
-           WHERE organization_id = ?
-           ORDER BY lower(name)`
-        )
-        .all(resolvedOrgId) as unknown as DbLocation[]
+  if (resolvedOrgId === 'all') {
+    rows = q
+      ? db
+          .prepare(
+            `SELECT id, name, organization_id, created_at
+             FROM locations
+             WHERE lower(name) LIKE lower(?)
+             ORDER BY lower(name)
+             LIMIT 20`
+          )
+          .all(`%${q}%`) as unknown as DbLocation[]
+      : db
+          .prepare(
+            `SELECT id, name, organization_id, created_at
+             FROM locations
+             ORDER BY lower(name)`
+          )
+          .all() as unknown as DbLocation[]
+  } else {
+    rows = q
+      ? db
+          .prepare(
+            `SELECT id, name, organization_id, created_at
+             FROM locations
+             WHERE organization_id = ? AND lower(name) LIKE lower(?)
+             ORDER BY lower(name)
+             LIMIT 20`
+          )
+          .all(resolvedOrgId, `%${q}%`) as unknown as DbLocation[]
+      : db
+          .prepare(
+            `SELECT id, name, organization_id, created_at
+             FROM locations
+             WHERE organization_id = ?
+             ORDER BY lower(name)`
+          )
+          .all(resolvedOrgId) as unknown as DbLocation[]
+  }
 
   res.json(
     rows.map(l => ({

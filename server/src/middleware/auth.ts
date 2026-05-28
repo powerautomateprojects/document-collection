@@ -47,4 +47,32 @@ export function authenticateToken(
   }
 }
 
+/**
+ * Like authenticateToken but non-blocking — populates req.user if a valid
+ * token is present, then always calls next(). Use on public routes that have
+ * optional auth-based behaviour.
+ */
+export function optionalAuthenticateToken(
+  req: Request,
+  _res: Response,
+  next: NextFunction
+): void {
+  const cookieToken = (req.cookies as Record<string, string | undefined>)?.['dcp-token']
+  const authHeader = req.headers.authorization
+  const bearerToken =
+    authHeader && authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : null
+  const token = cookieToken ?? bearerToken
+
+  if (token) {
+    try {
+      req.user = jwt.verify(token, JWT_SECRET) as unknown as JwtPayload
+    } catch {
+      // Invalid token — treat as unauthenticated
+    }
+  }
+  next()
+}
+
 export { JWT_SECRET }
