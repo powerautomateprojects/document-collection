@@ -120,6 +120,8 @@ interface DbResponseValue {
   response_id: number
   field_id: number
   value: string | null
+  staff_updated_by_name: string | null
+  staff_updated_at: string | null
 }
 
 interface SeedCollectionBody {
@@ -2022,6 +2024,8 @@ router.get('/:id/responses', authenticateToken, (req: Request, res: Response) =>
       values: (valsByResponse.get(r.id) ?? []).map(v => ({
         fieldId: v.field_id,
         value: v.value,
+        staffUpdatedByName: v.staff_updated_by_name ?? null,
+        staffUpdatedAt: v.staff_updated_at ?? null,
       })),
     }))
   )
@@ -2092,6 +2096,13 @@ router.put('/:id/responses/:responseId/staff-fields', authenticateToken, (req: R
       }
     }
 
+    // Look up the editor's name for the audit trail
+    const editorRow = db
+      .prepare('SELECT name FROM users WHERE id = ?')
+      .get(context.id) as { name: string } | undefined
+    const editorName = editorRow?.name ?? null
+    const editedAt = new Date().toISOString()
+
     // Upsert values inside a transaction
     db.transaction(() => {
       for (const val of bodyValues) {
@@ -2099,11 +2110,13 @@ router.put('/:id/responses/:responseId/staff-fields', authenticateToken, (req: R
           .prepare('SELECT id FROM collection_response_values WHERE response_id = ? AND field_id = ?')
           .get(responseId, val.fieldId) as { id: number } | undefined
         if (existing) {
-          db.prepare('UPDATE collection_response_values SET value = ? WHERE response_id = ? AND field_id = ?')
-            .run(val.value ?? null, responseId, val.fieldId)
+          db.prepare(
+            'UPDATE collection_response_values SET value = ?, staff_updated_by_name = ?, staff_updated_at = ? WHERE response_id = ? AND field_id = ?'
+          ).run(val.value ?? null, editorName, editedAt, responseId, val.fieldId)
         } else {
-          db.prepare('INSERT INTO collection_response_values (response_id, field_id, value) VALUES (?, ?, ?)')
-            .run(responseId, val.fieldId, val.value ?? null)
+          db.prepare(
+            'INSERT INTO collection_response_values (response_id, field_id, value, staff_updated_by_name, staff_updated_at) VALUES (?, ?, ?, ?, ?)'
+          ).run(responseId, val.fieldId, val.value ?? null, editorName, editedAt)
         }
       }
     })()

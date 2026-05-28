@@ -1494,6 +1494,14 @@ export default function RecordsPage() {
                             {answer?.value
                               ? renderResponseValue(field, answer.value)
                               : <p className="text-xs text-[#94A3B8] italic">Not set</p>}
+                            {answer?.staffUpdatedByName && (
+                              <p className="text-xs text-[#94A3B8] mt-1.5">
+                                Updated by {answer.staffUpdatedByName}
+                                {answer.staffUpdatedAt && (
+                                  <> · {new Date(answer.staffUpdatedAt).toLocaleString()}</>
+                                )}
+                              </p>
+                            )}
                           </div>
                         )
                       })}

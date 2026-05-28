@@ -143,10 +143,12 @@ export function createSchema(db: AppDatabase): void {
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS collection_response_values (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      response_id INTEGER NOT NULL REFERENCES collection_responses(id) ON DELETE CASCADE,
-      field_id    INTEGER NOT NULL REFERENCES collection_fields(id),
-      value       TEXT
+      id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+      response_id             INTEGER NOT NULL REFERENCES collection_responses(id) ON DELETE CASCADE,
+      field_id                INTEGER NOT NULL REFERENCES collection_fields(id),
+      value                   TEXT,
+      staff_updated_by_name   TEXT,
+      staff_updated_at        TEXT
     );
   `)
 

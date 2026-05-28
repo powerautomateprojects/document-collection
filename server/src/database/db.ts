@@ -25,15 +25,19 @@ function rebuildCollectionResponseValues(database: AppDatabase): void {
       database.prepare('ALTER TABLE collection_response_values RENAME TO collection_response_values_old').run()
       database.prepare(`
         CREATE TABLE collection_response_values (
-          id          INTEGER PRIMARY KEY AUTOINCREMENT,
-          response_id INTEGER NOT NULL REFERENCES collection_responses(id) ON DELETE CASCADE,
-          field_id    INTEGER NOT NULL REFERENCES collection_fields(id),
-          value       TEXT
+          id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+          response_id           INTEGER NOT NULL REFERENCES collection_responses(id) ON DELETE CASCADE,
+          field_id              INTEGER NOT NULL REFERENCES collection_fields(id),
+          value                 TEXT,
+          staff_updated_by_name TEXT,
+          staff_updated_at      TEXT
         )
       `).run()
       database.prepare(`
-        INSERT INTO collection_response_values (id, response_id, field_id, value)
-        SELECT id, response_id, field_id, value
+        INSERT INTO collection_response_values (id, response_id, field_id, value, staff_updated_by_name, staff_updated_at)
+        SELECT id, response_id, field_id, value,
+          CASE WHEN EXISTS(SELECT 1 FROM pragma_table_info('collection_response_values_old') WHERE name='staff_updated_by_name') THEN staff_updated_by_name ELSE NULL END,
+          CASE WHEN EXISTS(SELECT 1 FROM pragma_table_info('collection_response_values_old') WHERE name='staff_updated_at') THEN staff_updated_at ELSE NULL END
         FROM collection_response_values_old
       `).run()
       database.prepare('DROP TABLE collection_response_values_old').run()
@@ -603,6 +607,20 @@ function runMigrations(db: AppDatabase): void {
     hasForeignKeyTarget(db, 'collection_response_values', 'collection_fields_pre_location')
   ) {
     rebuildCollectionResponseValues(db)
+  }
+
+  const existingResponseValueCols = db
+    .prepare(`PRAGMA table_info(collection_response_values)`)
+    .all() as unknown as { name: string }[]
+  const responseValueColNames = new Set(existingResponseValueCols.map(c => c.name))
+
+  if (!responseValueColNames.has('staff_updated_by_name')) {
+    db.exec(`ALTER TABLE collection_response_values ADD COLUMN staff_updated_by_name TEXT`)
+    console.log('[db] Migration: added collection_response_values.staff_updated_by_name')
+  }
+  if (!responseValueColNames.has('staff_updated_at')) {
+    db.exec(`ALTER TABLE collection_response_values ADD COLUMN staff_updated_at TEXT`)
+    console.log('[db] Migration: added collection_response_values.staff_updated_at')
   }
 
   const existingTableColCols = db
