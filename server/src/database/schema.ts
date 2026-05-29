@@ -261,6 +261,63 @@ export function createSchema(db: AppDatabase): void {
       created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     );
   `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_fields (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      field_key     TEXT,
+      type          TEXT    NOT NULL CHECK(type IN (
+                      'short_text','date','long_text','single_choice','multiple_choice',
+                      'attachment','signature','confirmation','custom_table','rating','comment','matrix_likert_scale',
+                      'location'
+                    )),
+      label         TEXT    NOT NULL,
+      subtitle      TEXT,
+      page_number   INTEGER NOT NULL DEFAULT 1,
+      required      INTEGER NOT NULL DEFAULT 0,
+      options       TEXT,
+      display_style TEXT    NOT NULL DEFAULT 'radio',
+      sort_order    INTEGER NOT NULL DEFAULT 0
+    );
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_table_columns (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_field_id INTEGER NOT NULL REFERENCES ticket_fields(id) ON DELETE CASCADE,
+      name            TEXT    NOT NULL,
+      col_type        TEXT    NOT NULL DEFAULT 'text'
+                               CHECK(col_type IN ('text','number','date','checkbox','list')),
+      list_options    TEXT,
+      sort_order      INTEGER NOT NULL DEFAULT 0
+    );
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_responses (
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      collection_response_id INTEGER NOT NULL UNIQUE REFERENCES collection_responses(id) ON DELETE CASCADE,
+      collection_id          INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      filled_by              INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      filled_at              TEXT,
+      finalized              INTEGER NOT NULL DEFAULT 0,
+      finalized_at           TEXT,
+      finalized_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at             TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_response_values (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_response_id INTEGER NOT NULL REFERENCES ticket_responses(id) ON DELETE CASCADE,
+      ticket_field_id    INTEGER NOT NULL REFERENCES ticket_fields(id),
+      value              TEXT,
+      UNIQUE(ticket_response_id, ticket_field_id)
+    );
+  `)
 }
 
 export function seedData(db: AppDatabase): void {

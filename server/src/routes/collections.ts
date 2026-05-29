@@ -2253,4 +2253,285 @@ router.delete('/:id/responses/:responseId/comments/:commentId', authenticateToke
   }
 })
 
+// ── Ticket template routes ─────────────────────────────────────────────────
+
+// GET /:id/ticket — return ticket field definitions for a collection
+router.get('/:id/ticket', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const id = parseInt(req.params.id, 10)
+  if (!context || isNaN(id)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canViewResponses(context)) { res.status(403).json({ error: 'Access denied' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(id, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const fields = db
+      .prepare('SELECT * FROM ticket_fields WHERE collection_id = ? ORDER BY page_number ASC, sort_order ASC, id ASC')
+      .all(id) as Array<{ id: number; collection_id: number; field_key: string | null; type: string; label: string; subtitle: string | null; page_number: number; required: number; options: string | null; display_style: string; sort_order: number }>
+
+    const fieldIds = fields.map(f => f.id)
+    const cols: Array<{ id: number; ticket_field_id: number; name: string; col_type: string; list_options: string | null; sort_order: number }> =
+      fieldIds.length > 0
+        ? (db.prepare(`SELECT * FROM ticket_table_columns WHERE ticket_field_id IN (${fieldIds.map(() => '?').join(',')}) ORDER BY sort_order ASC`).all(...fieldIds) as typeof cols)
+        : []
+
+    const colsByFieldId = new Map<number, typeof cols>()
+    cols.forEach(col => {
+      const arr = colsByFieldId.get(col.ticket_field_id) ?? []
+      arr.push(col)
+      colsByFieldId.set(col.ticket_field_id, arr)
+    })
+
+    res.json(fields.map(f => ({
+      id: f.id,
+      fieldKey: f.field_key ?? `tf-${f.id}`,
+      type: f.type,
+      label: f.label,
+      subtitle: f.subtitle ?? null,
+      page: f.page_number,
+      required: f.required === 1,
+      options: f.options ? (JSON.parse(f.options) as string[]) : null,
+      displayStyle: resolveFieldDisplayStyle(f.type as FieldType, f.display_style),
+      sortOrder: f.sort_order,
+      tableColumns: f.type === 'custom_table'
+        ? (colsByFieldId.get(f.id) ?? []).map(col => ({
+            id: col.id,
+            name: col.name,
+            colType: col.col_type,
+            listOptions: col.col_type === 'list' && col.list_options ? (JSON.parse(col.list_options) as string[]) : null,
+            sortOrder: col.sort_order,
+          }))
+        : null,
+    })))
+  } catch (err) {
+    console.error('[collections] get ticket fields:', err)
+    res.status(500).json({ error: 'Failed to get ticket fields' })
+  }
+})
+
+// PUT /:id/ticket — replace all ticket fields for a collection
+router.put('/:id/ticket', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const id = parseInt(req.params.id, 10)
+  if (!context || isNaN(id)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!isAdministrator(context) && context.role !== 'administrator' && context.role !== 'team_manager') {
+    res.status(403).json({ error: 'Manager access required' }); return
+  }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(id, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const body = req.body as { fields?: FieldInput[] }
+    const fields = Array.isArray(body.fields) ? body.fields : []
+
+    // Disable FK checks so we can replace ticket_fields even when
+    // ticket_response_values already reference them
+    try { db.exec('PRAGMA foreign_keys = OFF') } catch { /* Turso */ }
+
+    // Delete existing ticket fields (cascade removes ticket_table_columns)
+    db.prepare('DELETE FROM ticket_fields WHERE collection_id = ?').run(id)
+
+    fields.forEach((field, idx) => {
+      const r = db.prepare(
+        `INSERT INTO ticket_fields (collection_id, field_key, type, label, subtitle, page_number, required, options, display_style, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        id,
+        field.fieldKey?.trim() || crypto.randomUUID(),
+        field.type,
+        field.label,
+        field.subtitle?.trim() || null,
+        Math.max(1, Math.floor(field.page ?? 1)),
+        field.required ? 1 : 0,
+        field.options?.length ? JSON.stringify(field.options) : null,
+        resolveFieldDisplayStyle(field.type, field.displayStyle),
+        field.sortOrder ?? idx,
+      )
+      if (field.type === 'custom_table' && field.tableColumns?.length) {
+        const fieldId = r.lastInsertRowid as number
+        field.tableColumns.forEach((col, ci) => {
+          db.prepare(
+            `INSERT INTO ticket_table_columns (ticket_field_id, name, col_type, list_options, sort_order) VALUES (?, ?, ?, ?, ?)`
+          ).run(
+            fieldId, col.name, col.colType,
+            col.colType === 'list' ? JSON.stringify((col.listOptions ?? []).map(o => o.trim()).filter(Boolean)) : null,
+            col.sortOrder ?? ci,
+          )
+        })
+      }
+    })
+
+    try { db.exec('PRAGMA foreign_keys = ON') } catch { /* Turso */ }
+    res.json({ ok: true })
+  } catch (err) {
+    const db2 = getDb()
+    try { db2.exec('PRAGMA foreign_keys = ON') } catch { /* Turso */ }
+    console.error('[collections] save ticket fields:', err)
+    res.status(500).json({ error: 'Failed to save ticket fields' })
+  }
+})
+
+// ── Ticket instance routes ─────────────────────────────────────────────────
+
+// GET /:id/responses/:responseId/ticket — get ticket instance (or null)
+router.get('/:id/responses/:responseId/ticket', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const collectionId = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  if (!context || isNaN(collectionId) || isNaN(responseId)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canViewResponses(context)) { res.status(403).json({ error: 'Access denied' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(collectionId, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    type TicketRow = { id: number; collection_response_id: number; collection_id: number; filled_by: number | null; filled_at: string | null; finalized: number; finalized_at: string | null; finalized_by: number | null; finalized_by_name: string | null; created_at: string; updated_at: string }
+    const ticket = db
+      .prepare(`SELECT tr.*, u.name AS finalized_by_name FROM ticket_responses tr LEFT JOIN users u ON u.id = tr.finalized_by WHERE tr.collection_response_id = ? AND tr.collection_id = ?`)
+      .get(responseId, collectionId) as TicketRow | undefined
+
+    if (!ticket) { res.json(null); return }
+
+    const values = db
+      .prepare('SELECT ticket_field_id, value FROM ticket_response_values WHERE ticket_response_id = ?')
+      .all(ticket.id) as Array<{ ticket_field_id: number; value: string | null }>
+
+    res.json({
+      id: ticket.id,
+      collectionResponseId: ticket.collection_response_id,
+      collectionId: ticket.collection_id,
+      filledBy: ticket.filled_by,
+      filledAt: ticket.filled_at,
+      finalized: ticket.finalized === 1,
+      finalizedAt: ticket.finalized_at,
+      finalizedByName: ticket.finalized_by_name,
+      values: values.map(v => ({ fieldId: v.ticket_field_id, value: v.value })),
+    })
+  } catch (err) {
+    console.error('[collections] get ticket:', err)
+    res.status(500).json({ error: 'Failed to get ticket' })
+  }
+})
+
+// POST /:id/responses/:responseId/ticket — create or update ticket draft
+router.post('/:id/responses/:responseId/ticket', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const collectionId = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  if (!context || isNaN(collectionId) || isNaN(responseId)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canViewResponses(context)) { res.status(403).json({ error: 'Staff access required' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(collectionId, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const responseRow = db
+      .prepare('SELECT id FROM collection_responses WHERE id = ? AND collection_id = ?')
+      .get(responseId, collectionId) as { id: number } | undefined
+    if (!responseRow) { res.status(404).json({ error: 'Response not found' }); return }
+
+    const existing = db
+      .prepare('SELECT id, finalized FROM ticket_responses WHERE collection_response_id = ? AND collection_id = ?')
+      .get(responseId, collectionId) as { id: number; finalized: number } | undefined
+    const body = req.body as { values?: Array<{ fieldId: number; value: string }> }
+    const values = Array.isArray(body.values) ? body.values : []
+
+    let ticketId: number
+    if (!existing) {
+      const r = db.prepare(
+        `INSERT INTO ticket_responses (collection_response_id, collection_id, filled_by, filled_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))`
+      ).run(responseId, collectionId, context.id)
+      ticketId = r.lastInsertRowid as number
+    } else {
+      ticketId = existing.id
+      db.prepare(`UPDATE ticket_responses SET filled_by = ?, filled_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+        .run(context.id, ticketId)
+    }
+
+    const upsert = db.prepare(
+      `INSERT INTO ticket_response_values (ticket_response_id, ticket_field_id, value) VALUES (?, ?, ?)
+       ON CONFLICT(ticket_response_id, ticket_field_id) DO UPDATE SET value = excluded.value`
+    )
+    for (const v of values) { upsert.run(ticketId, v.fieldId, v.value) }
+
+    const savedValues = db
+      .prepare('SELECT ticket_field_id, value FROM ticket_response_values WHERE ticket_response_id = ?')
+      .all(ticketId) as Array<{ ticket_field_id: number; value: string | null }>
+
+    res.json({
+      id: ticketId,
+      collectionResponseId: responseId,
+      collectionId: collectionId,
+      filledBy: context.id,
+      filledAt: new Date().toISOString(),
+      finalized: false,
+      finalizedAt: null,
+      finalizedByName: null,
+      values: savedValues.map(v => ({ fieldId: v.ticket_field_id, value: v.value })),
+    })
+  } catch (err) {
+    console.error('[collections] save ticket:', err)
+    res.status(500).json({ error: 'Failed to save ticket' })
+  }
+})
+
+// POST /:id/responses/:responseId/ticket/finalize — toggle ticket closed/open
+router.post('/:id/responses/:responseId/ticket/finalize', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const collectionId = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  if (!context || isNaN(collectionId) || isNaN(responseId)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canViewResponses(context)) { res.status(403).json({ error: 'Staff access required' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(collectionId, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const ticket = db
+      .prepare('SELECT id, finalized FROM ticket_responses WHERE collection_response_id = ? AND collection_id = ?')
+      .get(responseId, collectionId) as { id: number; finalized: number } | undefined
+    if (!ticket) { res.status(404).json({ error: 'Ticket not found. Save a draft first.' }); return }
+
+    const nowClosed = ticket.finalized !== 1
+    if (nowClosed) {
+      db.prepare(
+        `UPDATE ticket_responses SET finalized = 1, finalized_at = datetime('now'), finalized_by = ?, updated_at = datetime('now') WHERE id = ?`
+      ).run(context.id, ticket.id)
+    } else {
+      db.prepare(
+        `UPDATE ticket_responses SET finalized = 0, finalized_at = NULL, finalized_by = NULL, updated_at = datetime('now') WHERE id = ?`
+      ).run(ticket.id)
+    }
+
+    const userRow = nowClosed
+      ? db.prepare('SELECT name FROM users WHERE id = ?').get(context.id) as { name: string } | undefined
+      : undefined
+    const values = db
+      .prepare('SELECT ticket_field_id, value FROM ticket_response_values WHERE ticket_response_id = ?')
+      .all(ticket.id) as Array<{ ticket_field_id: number; value: string | null }>
+
+    res.json({
+      id: ticket.id,
+      collectionResponseId: responseId,
+      collectionId: collectionId,
+      filledBy: context.id,
+      filledAt: null,
+      finalized: nowClosed,
+      finalizedAt: nowClosed ? new Date().toISOString() : null,
+      finalizedByName: nowClosed ? (userRow?.name ?? null) : null,
+      values: values.map(v => ({ fieldId: v.ticket_field_id, value: v.value })),
+    })
+  } catch (err) {
+    console.error('[collections] toggle ticket closed:', err)
+    res.status(500).json({ error: 'Failed to update ticket' })
+  }
+})
+
 export default router

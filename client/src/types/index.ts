@@ -135,6 +135,32 @@ export interface SubmissionComment {
   createdAt: string
 }
 
+export interface TicketField {
+  id?: number
+  fieldKey?: string
+  type: FieldType
+  label: string
+  subtitle?: string | null
+  page: number
+  required: boolean
+  options: string[] | null
+  displayStyle?: FieldDisplayStyle
+  sortOrder: number
+  tableColumns: TableColumn[] | null
+}
+
+export interface TicketResponse {
+  id: number
+  collectionResponseId: number
+  collectionId: number
+  filledBy: number | null
+  filledAt: string | null
+  finalized: boolean
+  finalizedAt: string | null
+  finalizedByName: string | null
+  values: { fieldId: number; value: string | null }[]
+}
+
 export interface Category {
   id: number
   name: string

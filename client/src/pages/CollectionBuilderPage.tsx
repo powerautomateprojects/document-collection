@@ -23,6 +23,7 @@ import {
   publishCollectionVersion,
   updateCollection,
 } from '../api/collections'
+import { getTicketFields, saveTicketFields } from '../api/tickets'
 import { listCategories } from '../api/categories'
 import type { Category, Collection, CollectionField } from '../types'
 import type {
@@ -32,6 +33,7 @@ import type {
   FieldDisplayStyle,
   FieldType,
   TableColumn,
+  TicketField,
 } from '../types'
 import TableWizardModal from '../components/collections/TableWizardModal'
 import MatrixLikertConfigModal from '../components/collections/MatrixLikertConfigModal'
@@ -116,6 +118,30 @@ function mapCollectionToBuilderFields(collection: Collection): BuilderField[] {
           : null,
     })),
     staffOnly: f.staffOnly ?? false,
+  }))
+}
+
+function mapTicketFieldsToBuilder(fields: TicketField[]): BuilderField[] {
+  return fields.map(f => ({
+    _key: uid(),
+    fieldKey: f.fieldKey ?? uid(),
+    type: normalizeFieldType(f.type),
+    label: f.label,
+    subtitle: f.subtitle ?? '',
+    page: f.page ?? 1,
+    required: f.required,
+    options: f.options ?? [],
+    displayStyle: resolveDisplayStyle(normalizeFieldType(f.type), f.displayStyle),
+    branchRules: [],
+    tableColumns: (f.tableColumns ?? []).map(tc => ({
+      ...tc,
+      colType: normalizeColType(tc.colType),
+      listOptions:
+        tc.colType === 'list'
+          ? (tc.listOptions ?? []).map(opt => String(opt).trim()).filter(Boolean)
+          : null,
+    })),
+    staffOnly: false,
   }))
 }
 
@@ -212,7 +238,7 @@ export default function CollectionBuilderPage() {
   const [activeVersionId, setActiveVersionId] = useState<number | null>(null)
   const [currentVersionNumber, setCurrentVersionNumber] = useState<number | null>(null)
   const [versions, setVersions] = useState<CollectionVersion[]>([])
-  const [detailsTab, setDetailsTab] = useState<'general' | 'photo' | 'share' | 'versions'>('general')
+  const [detailsTab, setDetailsTab] = useState<'general' | 'photo' | 'share' | 'versions' | 'ticket'>('general')
   const [versionCompareFromId, setVersionCompareFromId] = useState<number | null>(null)
   const [versionCompareToId, setVersionCompareToId] = useState<number | null>(null)
   const [versionSnapshots, setVersionSnapshots] = useState<Record<number, Collection>>({})
@@ -222,10 +248,30 @@ export default function CollectionBuilderPage() {
   const [categoriesLoading, setCategoriesLoading] = useState(true)
   const [categoriesError, setCategoriesError] = useState<string | null>(null)
 
+  // Ticket fields
+  const [ticketFields, setTicketFields] = useState<BuilderField[]>([])
+  const [activeTicketPage, setActiveTicketPage] = useState(1)
+  const [ticketWizardField, setTicketWizardField] = useState<string | null>(null)
+  const [ticketMatrixConfigField, setTicketMatrixConfigField] = useState<string | null>(null)
+  const [ticketSaving, setTicketSaving] = useState(false)
+  const [ticketSaveError, setTicketSaveError] = useState<string | null>(null)
+  const [ticketSaved, setTicketSaved] = useState(false)
+
   // Used to skip autosave on initial load
   const loadedRef = useRef(false)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [loadTick, setLoadTick] = useState(0)
+
+  const ticketBuilderPages = useMemo(() => {
+    if (ticketFields.length === 0) return [1]
+    const pages = Array.from(new Set(ticketFields.map(f => Math.max(1, Math.floor(f.page || 1))))).sort((a, b) => a - b)
+    return pages.length > 0 ? pages : [1]
+  }, [ticketFields])
+
+  const visibleTicketFields = useMemo(
+    () => ticketFields.filter(f => Math.max(1, Math.floor(f.page || 1)) === activeTicketPage),
+    [activeTicketPage, ticketFields],
+  )
 
   const builderPages = useMemo(() => {
     const pages = Array.from(
@@ -284,6 +330,14 @@ export default function CollectionBuilderPage() {
         setLoadTick(t => t + 1)
       })
       .catch(err => setLoadError((err as Error).message))
+  }, [id, isEdit])
+
+  // Load ticket fields when editing
+  useEffect(() => {
+    if (!id || !isEdit) return
+    getTicketFields(parseInt(id, 10))
+      .then(fields => setTicketFields(mapTicketFieldsToBuilder(fields)))
+      .catch(() => setTicketFields([]))
   }, [id, isEdit])
 
   useEffect(() => {
@@ -737,6 +791,99 @@ export default function CollectionBuilderPage() {
     return names
   }, [categories, category])
 
+  // ── Ticket field helpers ──────────────────────────────────
+
+  function updateTicketField(key: string, patch: Partial<BuilderField>) {
+    setTicketFields(prev => prev.map(f => f._key === key ? { ...f, ...patch } : f))
+  }
+
+  function removeTicketField(key: string) {
+    setTicketFields(prev => prev.filter(f => f._key !== key))
+  }
+
+  function moveTicketField(key: string, dir: -1 | 1) {
+    setTicketFields(prev => {
+      const currentField = prev.find(f => f._key === key)
+      if (!currentField) return prev
+      const samePageItems = prev
+        .map((field, index) => ({ field, index }))
+        .filter(({ field }) => Math.max(1, Math.floor(field.page || 1)) === Math.max(1, Math.floor(currentField.page || 1)))
+      const pageIndex = samePageItems.findIndex(({ field }) => field._key === key)
+      const targetPageIndex = pageIndex + dir
+      if (pageIndex === -1 || targetPageIndex < 0 || targetPageIndex >= samePageItems.length) return prev
+      const next = [...prev]
+      const sourceIndex = samePageItems[pageIndex].index
+      const targetIndex = samePageItems[targetPageIndex].index
+      ;[next[sourceIndex], next[targetIndex]] = [next[targetIndex], next[sourceIndex]]
+      return next
+    })
+  }
+
+  function addTicketOption(key: string) {
+    setTicketFields(prev => prev.map(f => f._key === key ? { ...f, options: [...f.options, ''] } : f))
+  }
+
+  function updateTicketOption(key: string, idx: number, val: string) {
+    setTicketFields(prev => prev.map(f => f._key === key ? { ...f, options: f.options.map((o, i) => i === idx ? val : o) } : f))
+  }
+
+  function removeTicketOption(key: string, idx: number) {
+    setTicketFields(prev => prev.map(f => f._key === key ? { ...f, options: f.options.filter((_, i) => i !== idx) } : f))
+  }
+
+  function addTicketOtherOption(key: string) {
+    setTicketFields(prev => prev.map(f =>
+      f._key === key && !f.options.includes(OTHER_OPTION_MARKER)
+        ? { ...f, options: [...f.options, OTHER_OPTION_MARKER] }
+        : f
+    ))
+  }
+
+  function removeTicketOtherOption(key: string) {
+    setTicketFields(prev => prev.map(f =>
+      f._key === key ? { ...f, options: f.options.filter(o => o !== OTHER_OPTION_MARKER) } : f
+    ))
+  }
+
+  async function handleSaveTicket() {
+    if (!id) return
+    setTicketSaving(true)
+    setTicketSaveError(null)
+    try {
+      const fieldsPayload = ticketFields
+        .filter(f => f.label.trim() !== '')
+        .map((f, i) => ({
+          fieldKey: f.fieldKey,
+          type: normalizeFieldType(f.type),
+          label: f.label.trim(),
+          subtitle: f.subtitle.trim() || undefined,
+          page: Math.max(1, Math.floor(f.page || 1)),
+          required: f.required,
+          options: f.options.filter(o => o.trim() !== ''),
+          displayStyle: resolveDisplayStyle(f.type, f.displayStyle),
+          branchRules: [],
+          tableColumns: f.tableColumns.map((c, ci) => ({
+            ...c,
+            colType: normalizeColType(c.colType),
+            listOptions:
+              normalizeColType(c.colType) === 'list'
+                ? (c.listOptions ?? []).map(opt => opt.trim()).filter(Boolean)
+                : null,
+            sortOrder: ci,
+          })),
+          sortOrder: i,
+          staffOnly: false,
+        }))
+      await saveTicketFields(parseInt(id, 10), fieldsPayload)
+      setTicketSaved(true)
+      setTimeout(() => setTicketSaved(false), 2500)
+    } catch (err) {
+      setTicketSaveError((err as Error).message)
+    } finally {
+      setTicketSaving(false)
+    }
+  }
+
   // ── Wizard field ──────────────────────────────────────────
 
   const wizardBuilderField = wizardField
@@ -799,6 +946,44 @@ export default function CollectionBuilderPage() {
           onClose={() => setMatrixConfigField(null)}
         />
       )}
+
+      {/* Ticket Table Wizard modal */}
+      {ticketWizardField && (() => {
+        const twf = ticketFields.find(f => f._key === ticketWizardField)
+        if (!twf) return null
+        return (
+          <TableWizardModal
+            columns={twf.tableColumns}
+            onSave={cols => {
+              updateTicketField(twf._key, { tableColumns: cols })
+              setTicketWizardField(null)
+            }}
+            onClose={() => setTicketWizardField(null)}
+          />
+        )
+      })()}
+
+      {/* Ticket Matrix Config modal */}
+        {ticketMatrixConfigField && (() => {
+        const tmf = ticketFields.find(f => f._key === ticketMatrixConfigField)
+        if (!tmf) return null
+        let matrixCfg = null
+        try {
+          if (tmf.options.length > 0 && tmf.options[0].startsWith('{')) {
+            matrixCfg = JSON.parse(tmf.options[0])
+          }
+        } catch { /* ignore */ }
+        return (
+          <MatrixLikertConfigModal
+            config={matrixCfg}
+            onSave={config => {
+              updateTicketField(tmf._key, { options: [JSON.stringify(config)] })
+              setTicketMatrixConfigField(null)
+            }}
+            onClose={() => setTicketMatrixConfigField(null)}
+          />
+        )
+      })()}
 
       <div className="max-w-6xl mx-auto space-y-6">
         {/* Top bar */}
@@ -956,6 +1141,20 @@ export default function CollectionBuilderPage() {
                 ].join(' ')}
               >
                 Versions
+              </button>
+            )}
+            {isEdit && (
+              <button
+                type="button"
+                onClick={() => setDetailsTab('ticket')}
+                className={[
+                  'px-3 py-2 text-sm font-semibold border-b-2 transition-colors rounded-t',
+                  detailsTab === 'ticket'
+                    ? 'border-[#2563EB] text-[#2563EB] bg-blue-50 dark:bg-blue-900/20'
+                    : 'border-transparent text-[#64748B] hover:text-[#2563EB] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]',
+                ].join(' ')}
+              >
+                Ticket
               </button>
             )}
           </div>
@@ -1280,10 +1479,99 @@ export default function CollectionBuilderPage() {
           )}
         </div>
 
+        {/* Ticket Field Designer */}
+        {detailsTab === 'ticket' && isEdit && (
+          <div className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-[#64748B]">
+                Ticket Fields
+              </h2>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setTicketFields(prev => [...prev, blankField(activeTicketPage)])}
+                  className="flex items-center gap-1 text-xs text-[#2563EB] hover:underline"
+                >
+                  <Plus size={13} />
+                  Add field
+                </button>
+              </div>
+            </div>
+            <p className="text-xs text-[#64748B]">
+              Define the fields that staff will fill in when creating a ticket for a submission. Closed tickets can be re-opened.
+            </p>
+
+            {ticketBuilderPages.length > 1 && (
+              <div className="flex flex-wrap gap-2">
+                {ticketBuilderPages.map(pageNumber => (
+                  <button
+                    key={pageNumber}
+                    type="button"
+                    onClick={() => setActiveTicketPage(pageNumber)}
+                    className={[
+                      'px-3 py-2 text-sm font-semibold border-b-2 transition-colors rounded-t',
+                      activeTicketPage === pageNumber
+                        ? 'border-[#2563EB] text-[#2563EB] bg-blue-50 dark:bg-blue-900/20'
+                        : 'border-transparent text-[#64748B] hover:text-[#2563EB] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]',
+                    ].join(' ')}
+                  >
+                    Page {pageNumber}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {visibleTicketFields.length === 0 ? (
+                <div className="text-center py-10 text-[#94A3B8] text-sm">
+                  No ticket fields yet. Add a field to get started.
+                </div>
+              ) : (
+                visibleTicketFields.map((field, idx) => (
+                  <FieldCard
+                    key={field._key}
+                    field={field}
+                    index={idx}
+                    total={visibleTicketFields.length}
+                    onUpdate={patch => updateTicketField(field._key, patch)}
+                    onRemove={() => removeTicketField(field._key)}
+                    onMoveUp={() => moveTicketField(field._key, -1)}
+                    onMoveDown={() => moveTicketField(field._key, 1)}
+                    onAddOption={() => addTicketOption(field._key)}
+                    onAddOtherOption={() => addTicketOtherOption(field._key)}
+                    onRemoveOtherOption={() => removeTicketOtherOption(field._key)}
+                    onUpdateOption={(i, v) => updateTicketOption(field._key, i, v)}
+                    onRemoveOption={i => removeTicketOption(field._key, i)}
+                    onConfigureTable={() => setTicketWizardField(field._key)}
+                    onConfigureMatrix={() => setTicketMatrixConfigField(field._key)}
+                    hideStaffOnly
+                  />
+                ))
+              )}
+            </div>
+
+            {ticketSaveError && (
+              <div className="rounded border border-red-200 bg-red-50 dark:bg-red-900/20 p-3 text-red-700 dark:text-red-400 text-sm">
+                {ticketSaveError}
+              </div>
+            )}
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleSaveTicket}
+                disabled={ticketSaving}
+                className="inline-flex items-center gap-2 rounded bg-[#2563EB] px-4 py-2 text-sm font-semibold text-white hover:bg-[#1D4ED8] disabled:opacity-50"
+              >
+                {ticketSaving ? 'Saving…' : ticketSaved ? 'Saved!' : 'Save Ticket'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Two-column: Instructions + Field Designer (General tab only) */}
         {detailsTab === 'general' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          {/* Instructions */}
           <div className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg p-5 space-y-4">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-[#64748B]">
               Instructions
@@ -1424,6 +1712,7 @@ interface FieldCardProps {
   onRemoveOption: (idx: number) => void
   onConfigureTable: () => void
   onConfigureMatrix: () => void
+  hideStaffOnly?: boolean
 }
 
 const FIELD_INPUT =
@@ -1446,6 +1735,7 @@ function FieldCard({
   onRemoveOption,
   onConfigureTable,
   onConfigureMatrix,
+  hideStaffOnly = false,
 }: FieldCardProps) {
   const showOptions =
     field.type === 'single_choice' || field.type === 'multiple_choice'
@@ -1560,6 +1850,7 @@ function FieldCard({
               className={`${FIELD_INPUT} w-16`}
             />
           </label>
+          {!hideStaffOnly && (
           <label className="flex items-center gap-1 text-xs cursor-pointer select-none text-amber-600 dark:text-amber-500">
             <input
               type="checkbox"
@@ -1570,6 +1861,7 @@ function FieldCard({
             <Lock size={11} />
             Staff only
           </label>
+          )}
         </div>
 
         {/* Display style toggle for single_choice */}

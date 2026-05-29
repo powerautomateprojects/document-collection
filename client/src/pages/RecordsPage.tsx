@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Calendar, ClipboardList, LayoutGrid, Lock, Mail, MessageSquare, Save, Table2, Tag, Trash2, User, Download } from 'lucide-react'
+import { Calendar, ClipboardList, Clipboard, LayoutGrid, Lock, LockOpen, Mail, MessageSquare, Save, Table2, Tag, Trash2, User, Download } from 'lucide-react'
 import { getCollection, getComments, addComment, deleteComment, getResponses, listCollections, upsertStaffFields } from '../api/collections'
+import { getTicketFields, getTicket, saveTicket, finalizeTicket } from '../api/tickets'
 import { getCategoryColorClasses } from '../utils/categoryColors'
-import type { Collection, CollectionField, CollectionResponse, SubmissionComment } from '../types'
+import type { Collection, CollectionField, CollectionResponse, SubmissionComment, TicketField, TicketResponse } from '../types'
 import { useAuth } from '../contexts/AuthContext'
 
 type RecordsView = 'summary' | 'individual'
@@ -745,6 +746,149 @@ function StaffFieldEditor({
   )
 }
 
+const TICKET_INPUT =
+  'w-full border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#0F172A] ' +
+  'text-[#1E293B] dark:text-[#F1F5F9] placeholder-[#94A3B8] px-2.5 py-1.5 text-sm rounded ' +
+  'focus:outline-none focus:ring-2 focus:ring-[#2563EB]'
+
+function TicketFieldEditor({
+  field,
+  value,
+  onChange,
+}: {
+  field: TicketField
+  value: string
+  onChange: (v: string) => void
+}) {
+  if (
+    field.type === 'comment' ||
+    field.type === 'custom_table' ||
+    field.type === 'matrix_likert_scale'
+  ) {
+    return <p className="text-xs text-[#94A3B8] italic">Complex field — view only</p>
+  }
+
+  if (field.type === 'long_text') {
+    return (
+      <textarea
+        className={TICKET_INPUT}
+        rows={3}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder="Enter value…"
+      />
+    )
+  }
+
+  if (field.type === 'date') {
+    return (
+      <input
+        type="date"
+        className={TICKET_INPUT}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+      />
+    )
+  }
+
+  if (field.type === 'confirmation') {
+    return (
+      <label className="flex items-center gap-2 text-sm text-[#1E293B] dark:text-[#F1F5F9] cursor-pointer">
+        <input
+          type="checkbox"
+          checked={value === 'true'}
+          onChange={e => onChange(e.target.checked ? 'true' : 'false')}
+          className="accent-[#2563EB]"
+        />
+        Confirmed
+      </label>
+    )
+  }
+
+  if (field.type === 'single_choice') {
+    const options = field.options ?? []
+    return (
+      <select className={TICKET_INPUT} value={value} onChange={e => onChange(e.target.value)}>
+        <option value="">— select —</option>
+        {options.map(opt => (
+          <option key={opt} value={opt}>{opt}</option>
+        ))}
+      </select>
+    )
+  }
+
+  if (field.type === 'multiple_choice') {
+    const options = field.options ?? []
+    let selected: string[] = []
+    try {
+      const parsed = JSON.parse(value) as unknown
+      selected = Array.isArray(parsed) ? parsed.map(String) : value ? [value] : []
+    } catch {
+      selected = value ? [value] : []
+    }
+    return (
+      <div className="flex flex-col gap-1">
+        {options.map(opt => (
+          <label key={opt} className="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected.includes(opt)}
+              onChange={e => {
+                const next = e.target.checked ? [...selected, opt] : selected.filter(s => s !== opt)
+                onChange(JSON.stringify(next))
+              }}
+              className="accent-[#2563EB]"
+            />
+            {opt}
+          </label>
+        ))}
+      </div>
+    )
+  }
+
+  if (field.type === 'rating') {
+    const num = Number(value) || 0
+    return (
+      <div className="flex items-center gap-1 flex-wrap">
+        {[1, 2, 3, 4, 5].map(n => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => onChange(String(n))}
+            className={[
+              'w-8 h-8 rounded text-sm font-medium transition-colors',
+              n <= num
+                ? 'bg-[#2563EB] text-white'
+                : 'bg-[#F1F5F9] dark:bg-[#334155] text-[#64748B] hover:bg-blue-100',
+            ].join(' ')}
+          >
+            {n}
+          </button>
+        ))}
+        {num > 0 && (
+          <button
+            type="button"
+            onClick={() => onChange('')}
+            className="text-xs text-[#94A3B8] ml-1 hover:text-red-400 transition-colors"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <input
+      type="text"
+      className={TICKET_INPUT}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder="Enter value…"
+    />
+  )
+}
+
 export default function RecordsPage() {
   const { user } = useAuth()
   const [collections, setCollections] = useState<Collection[]>([])
@@ -759,11 +903,18 @@ export default function RecordsPage() {
   const [expandedStaffResponseId, setExpandedStaffResponseId] = useState<number | null>(null)
   const [staffEdits, setStaffEdits] = useState<Record<number, Record<number, string>>>({})
   const [staffSaveState, setStaffSaveState] = useState<Record<number, 'idle' | 'saving' | 'saved' | 'error'>>({})
-  // Comments
-  const [submissionTab, setSubmissionTab] = useState<Record<number, 'general' | 'comments'>>({})
+  // Comments + tabs
+  const [submissionTab, setSubmissionTab] = useState<Record<number, 'general' | 'comments' | 'ticket'>>({})
   const [commentsByResponse, setCommentsByResponse] = useState<Record<number, SubmissionComment[]>>({})
   const [newCommentText, setNewCommentText] = useState<Record<number, string>>({})
   const [commentSubmitting, setCommentSubmitting] = useState<Record<number, boolean>>({})
+  // Ticket state
+  const [ticketFieldsForCollection, setTicketFieldsForCollection] = useState<TicketField[]>([])
+  const [ticketsByResponse, setTicketsByResponse] = useState<Record<number, TicketResponse | null | 'loading'>>({})
+  const [ticketEdits, setTicketEdits] = useState<Record<number, Record<number, string>>>({})
+  const [ticketSaveState, setTicketSaveState] = useState<Record<number, 'idle' | 'saving' | 'saved' | 'error'>>({})
+  const [ticketFinalizing, setTicketFinalizing] = useState<Record<number, boolean>>({})
+  const [showFinalizeConfirm, setShowFinalizeConfirm] = useState<number | null>(null)
   const commentPollRef = useRef<Record<number, ReturnType<typeof setInterval>>>({})
   useEffect(() => {
     listCollections()
@@ -780,6 +931,7 @@ export default function RecordsPage() {
     if (selectedCollectionId === null) {
       setSelectedCollection(null)
       setResponses([])
+      setTicketFieldsForCollection([])
       return
     }
 
@@ -796,12 +948,68 @@ export default function RecordsPage() {
       })
       .catch(err => setError((err as Error).message))
       .finally(() => setLoadingResponses(false))
+
+    getTicketFields(selectedCollectionId)
+      .then(fields => setTicketFieldsForCollection(fields))
+      .catch(() => setTicketFieldsForCollection([]))
   }, [selectedCollectionId])
 
   const staffFields = useMemo(
     () => (selectedCollection?.fields ?? []).filter(f => f.staffOnly),
     [selectedCollection]
   )
+
+  // ── Ticket helpers ─────────────────────────────────────────────────────────
+
+  function openTicketTab(responseId: number) {
+    setSubmissionTab(prev => ({ ...prev, [responseId]: 'ticket' }))
+    if (ticketsByResponse[responseId] !== undefined) return
+    setTicketsByResponse(prev => ({ ...prev, [responseId]: 'loading' }))
+    if (!selectedCollectionId) return
+    getTicket(selectedCollectionId, responseId)
+      .then(ticket => {
+        setTicketsByResponse(prev => ({ ...prev, [responseId]: ticket }))
+        if (ticket) {
+          const initialEdits: Record<number, string> = {}
+          for (const v of ticket.values) {
+            initialEdits[v.fieldId] = v.value ?? ''
+          }
+          setTicketEdits(prev => ({ ...prev, [responseId]: initialEdits }))
+        }
+      })
+      .catch(() => setTicketsByResponse(prev => ({ ...prev, [responseId]: null })))
+  }
+
+  async function handleSaveTicketDraft(responseId: number) {
+    if (!selectedCollectionId) return
+    setTicketSaveState(prev => ({ ...prev, [responseId]: 'saving' }))
+    const edits = ticketEdits[responseId] ?? {}
+    const values = ticketFieldsForCollection
+      .filter(f => f.id !== undefined)
+      .map(f => ({ fieldId: f.id as number, value: edits[f.id as number] ?? '' }))
+    try {
+      const ticket = await saveTicket(selectedCollectionId, responseId, values)
+      setTicketsByResponse(prev => ({ ...prev, [responseId]: ticket }))
+      setTicketSaveState(prev => ({ ...prev, [responseId]: 'saved' }))
+      setTimeout(() => setTicketSaveState(prev => ({ ...prev, [responseId]: 'idle' })), 2500)
+    } catch {
+      setTicketSaveState(prev => ({ ...prev, [responseId]: 'error' }))
+    }
+  }
+
+  async function handleFinalizeTicket(responseId: number) {
+    if (!selectedCollectionId) return
+    setTicketFinalizing(prev => ({ ...prev, [responseId]: true }))
+    try {
+      const ticket = await finalizeTicket(selectedCollectionId, responseId)
+      setTicketsByResponse(prev => ({ ...prev, [responseId]: ticket }))
+      setShowFinalizeConfirm(null)
+    } catch {
+      // ignore; ticket remains
+    } finally {
+      setTicketFinalizing(prev => ({ ...prev, [responseId]: false }))
+    }
+  }
 
   // ── Comments helpers ───────────────────────────────────────────────────────
 
@@ -1456,6 +1664,12 @@ export default function RecordsPage() {
           {responses.map(response => {
             const activeTab = submissionTab[response.id] ?? 'general'
             const comments = commentsByResponse[response.id] ?? []
+            const ticketData = ticketsByResponse[response.id]
+            const ticketEditsForResponse = ticketEdits[response.id] ?? {}
+            const ticketSave = ticketSaveState[response.id] ?? 'idle'
+            const isTicketFinalizing = ticketFinalizing[response.id] ?? false
+            const finalizedTicket = ticketData && ticketData !== 'loading' && ticketData.finalized ? ticketData : null
+            const draftTicket = ticketData && ticketData !== 'loading' && !ticketData.finalized ? ticketData : null
             return (
             <section
               key={response.id}
@@ -1502,6 +1716,21 @@ export default function RecordsPage() {
                   <MessageSquare size={13} />
                   Comments{comments.length > 0 && <span className="ml-0.5 text-xs bg-[#2563EB] text-white rounded-full px-1.5 py-0.5 leading-none">{comments.length}</span>}
                 </button>
+                {ticketFieldsForCollection.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => openTicketTab(response.id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border-b-2 transition-colors -mb-px ${activeTab === 'ticket' ? 'border-[#2563EB] text-[#2563EB]' : 'border-transparent text-[#64748B] hover:text-[#1E293B] dark:hover:text-[#F1F5F9]'}`}
+                  >
+                    <Clipboard size={13} />
+                    Ticket
+                    {(() => {
+                      const t = ticketsByResponse[response.id]
+                      if (t && t !== 'loading' && t.finalized) return <Lock size={11} className="text-green-600" />
+                      return null
+                    })()}
+                  </button>
+                )}
               </div>
 
               {/* General tab */}
@@ -1713,6 +1942,115 @@ export default function RecordsPage() {
                       {commentSubmitting[response.id] ? '…' : 'Post'}
                     </button>
                   </div>
+                </div>
+              )}
+
+              {/* Ticket tab */}
+              {activeTab === 'ticket' && ticketData === 'loading' && (
+                <p className="text-sm text-[#94A3B8]">Loading ticket…</p>
+              )}
+              {activeTab === 'ticket' && finalizedTicket && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400 font-medium">
+                    <Lock size={14} />
+                    Ticket closed
+                    {finalizedTicket.finalizedAt && (
+                      <span className="text-xs text-[#94A3B8] font-normal ml-1">
+                        {new Date(finalizedTicket.finalizedAt.includes('T') ? finalizedTicket.finalizedAt : finalizedTicket.finalizedAt.replace(' ', 'T') + 'Z').toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                        {finalizedTicket.finalizedByName ? ` by ${finalizedTicket.finalizedByName}` : ''}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void handleFinalizeTicket(response.id)}
+                      disabled={isTicketFinalizing}
+                      className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] dark:text-[#94A3B8] text-xs font-medium hover:bg-[#F8FAFC] dark:hover:bg-[#1E293B] disabled:opacity-50 transition-colors"
+                    >
+                      <LockOpen size={12} />
+                      {isTicketFinalizing ? 'Re-opening…' : 'Re-open'}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {ticketFieldsForCollection.map(field => {
+                      if (field.id === undefined) return null
+                      const val = finalizedTicket.values.find(v => v.fieldId === field.id)?.value ?? ''
+                      return (
+                        <div key={field.id} className="rounded border border-[#E2E8F0] dark:border-[#334155] p-3 bg-[#F8FAFC] dark:bg-[#0F172A]">
+                          <p className="text-xs font-medium uppercase tracking-wide text-[#64748B] mb-1">{field.label}</p>
+                          <p className="text-sm text-[#1E293B] dark:text-[#F1F5F9] whitespace-pre-wrap break-words">{val || <span className="text-[#94A3B8] italic">—</span>}</p>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+              {activeTab === 'ticket' && !finalizedTicket && ticketData !== 'loading' && (
+                <div className="space-y-4">
+                  {ticketFieldsForCollection.map(field => {
+                    if (field.id === undefined) return null
+                    return (
+                      <div key={field.id}>
+                        <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">
+                          {field.label}
+                          {field.required && <span className="text-red-500 ml-0.5">*</span>}
+                        </label>
+                        <TicketFieldEditor
+                          field={field}
+                          value={ticketEditsForResponse[field.id] ?? (draftTicket ? (draftTicket.values.find(v => v.fieldId === field.id)?.value ?? '') : '')}
+                          onChange={v => setTicketEdits(prev => ({
+                            ...prev,
+                            [response.id]: { ...(prev[response.id] ?? {}), [field.id as number]: v },
+                          }))}
+                        />
+                      </div>
+                    )
+                  })}
+                  {ticketSave === 'error' && (
+                    <p className="text-xs text-red-500">Failed to save. Please try again.</p>
+                  )}
+                  <div className="flex items-center gap-3 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveTicketDraft(response.id)}
+                      disabled={ticketSave === 'saving'}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#2563EB] text-white text-sm font-medium hover:bg-[#1D4ED8] disabled:opacity-50 transition-colors"
+                    >
+                      <Save size={13} />
+                      {ticketSave === 'saving' ? 'Saving…' : ticketSave === 'saved' ? 'Saved!' : 'Save Draft'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowFinalizeConfirm(response.id)}
+                      disabled={isTicketFinalizing}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-green-600 text-green-700 dark:text-green-400 text-sm font-medium hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50 transition-colors"
+                    >
+                      <Lock size={13} />
+                      Close
+                    </button>
+                  </div>
+                  {showFinalizeConfirm === response.id && (
+                    <div className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-3">
+                      <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Close this ticket?</p>
+                      <p className="text-xs text-amber-700 dark:text-amber-400">Closing marks the ticket as done. It can be re-opened at any time.</p>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleFinalizeTicket(response.id)}
+                          disabled={isTicketFinalizing}
+                          className="px-3 py-1.5 rounded bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
+                        >
+                          {isTicketFinalizing ? 'Closing…' : 'Yes, Close'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowFinalizeConfirm(null)}
+                          className="px-3 py-1.5 rounded border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-sm font-medium hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </section>
