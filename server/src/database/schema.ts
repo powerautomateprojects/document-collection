@@ -318,6 +318,23 @@ export function createSchema(db: AppDatabase): void {
       UNIQUE(ticket_response_id, ticket_field_id)
     );
   `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_history (
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_response_id   INTEGER NOT NULL REFERENCES ticket_responses(id) ON DELETE CASCADE,
+      ticket_field_id      INTEGER,
+      ticket_field_key     TEXT,
+      field_label_snapshot TEXT,
+      field_type_snapshot  TEXT,
+      event_type           TEXT NOT NULL CHECK(event_type IN ('field_changed', 'ticket_closed', 'ticket_reopened')),
+      old_value            TEXT,
+      new_value            TEXT,
+      changed_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      changed_by_name      TEXT,
+      changed_at           TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
 }
 
 export function seedData(db: AppDatabase): void {

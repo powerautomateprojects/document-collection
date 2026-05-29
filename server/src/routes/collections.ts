@@ -2255,6 +2255,59 @@ router.delete('/:id/responses/:responseId/comments/:commentId', authenticateToke
 
 // ── Ticket template routes ─────────────────────────────────────────────────
 
+type TicketHistoryEventType = 'field_changed' | 'ticket_closed' | 'ticket_reopened'
+
+function normalizeTicketAuditValue(value: string | null | undefined): string | null {
+  return value == null || value === '' ? null : value
+}
+
+function resolveTicketActorName(db: ReturnType<typeof getDb>, userId: number): string | null {
+  const row = db.prepare('SELECT name FROM users WHERE id = ?').get(userId) as { name: string } | undefined
+  return row?.name ?? null
+}
+
+function insertTicketHistoryEntry(
+  db: ReturnType<typeof getDb>,
+  entry: {
+    ticketResponseId: number
+    ticketFieldId?: number | null
+    ticketFieldKey?: string | null
+    fieldLabelSnapshot?: string | null
+    fieldTypeSnapshot?: string | null
+    eventType: TicketHistoryEventType
+    oldValue?: string | null
+    newValue?: string | null
+    changedBy: number | null
+    changedByName: string | null
+  }
+): void {
+  db.prepare(
+    `INSERT INTO ticket_history (
+      ticket_response_id,
+      ticket_field_id,
+      ticket_field_key,
+      field_label_snapshot,
+      field_type_snapshot,
+      event_type,
+      old_value,
+      new_value,
+      changed_by,
+      changed_by_name
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    entry.ticketResponseId,
+    entry.ticketFieldId ?? null,
+    entry.ticketFieldKey ?? null,
+    entry.fieldLabelSnapshot ?? null,
+    entry.fieldTypeSnapshot ?? null,
+    entry.eventType,
+    entry.oldValue ?? null,
+    entry.newValue ?? null,
+    entry.changedBy,
+    entry.changedByName,
+  )
+}
+
 // GET /:id/ticket — return ticket field definitions for a collection
 router.get('/:id/ticket', authenticateToken, (req: Request, res: Response): void => {
   const context = loadRequestUserContext(req)
@@ -2477,6 +2530,15 @@ router.post('/:id/responses/:responseId/ticket', authenticateToken, (req: Reques
       .get(responseId, collectionId) as { id: number; finalized: number } | undefined
     const body = req.body as { values?: Array<{ fieldId: number; value: string }> }
     const values = Array.isArray(body.values) ? body.values : []
+    const existingValues = existing
+      ? db.prepare('SELECT ticket_field_id, value FROM ticket_response_values WHERE ticket_response_id = ?').all(existing.id) as Array<{ ticket_field_id: number; value: string | null }>
+      : []
+    const previousValueByFieldId = new Map(existingValues.map(value => [value.ticket_field_id, value.value]))
+    const fieldRows = db
+      .prepare('SELECT id, field_key, label, type FROM ticket_fields WHERE collection_id = ?')
+      .all(collectionId) as Array<{ id: number; field_key: string | null; label: string; type: string }>
+    const fieldMetaById = new Map(fieldRows.map(field => [field.id, field]))
+    const actorName = resolveTicketActorName(db, context.id)
 
     let ticketId: number
     if (!existing) {
@@ -2494,7 +2556,27 @@ router.post('/:id/responses/:responseId/ticket', authenticateToken, (req: Reques
       `INSERT INTO ticket_response_values (ticket_response_id, ticket_field_id, value) VALUES (?, ?, ?)
        ON CONFLICT(ticket_response_id, ticket_field_id) DO UPDATE SET value = excluded.value`
     )
-    for (const v of values) { upsert.run(ticketId, v.fieldId, v.value) }
+    for (const v of values) {
+      upsert.run(ticketId, v.fieldId, v.value)
+
+      const oldValue = normalizeTicketAuditValue(previousValueByFieldId.get(v.fieldId))
+      const newValue = normalizeTicketAuditValue(v.value)
+      if (oldValue === newValue) continue
+
+      const fieldMeta = fieldMetaById.get(v.fieldId)
+      insertTicketHistoryEntry(db, {
+        ticketResponseId: ticketId,
+        ticketFieldId: v.fieldId,
+        ticketFieldKey: fieldMeta?.field_key ?? null,
+        fieldLabelSnapshot: fieldMeta?.label ?? `Field #${v.fieldId}`,
+        fieldTypeSnapshot: fieldMeta?.type ?? null,
+        eventType: 'field_changed',
+        oldValue,
+        newValue,
+        changedBy: context.id,
+        changedByName: actorName,
+      })
+    }
 
     const savedValues = db
       .prepare('SELECT ticket_field_id, value FROM ticket_response_values WHERE ticket_response_id = ?')
@@ -2536,6 +2618,7 @@ router.post('/:id/responses/:responseId/ticket/finalize', authenticateToken, (re
     if (!ticket) { res.status(404).json({ error: 'Ticket not found. Save a draft first.' }); return }
 
     const nowClosed = ticket.finalized !== 1
+    const actorName = resolveTicketActorName(db, context.id)
     if (nowClosed) {
       db.prepare(
         `UPDATE ticket_responses SET finalized = 1, finalized_at = datetime('now'), finalized_by = ?, updated_at = datetime('now') WHERE id = ?`
@@ -2545,6 +2628,16 @@ router.post('/:id/responses/:responseId/ticket/finalize', authenticateToken, (re
         `UPDATE ticket_responses SET finalized = 0, finalized_at = NULL, finalized_by = NULL, updated_at = datetime('now') WHERE id = ?`
       ).run(ticket.id)
     }
+
+    insertTicketHistoryEntry(db, {
+      ticketResponseId: ticket.id,
+      eventType: nowClosed ? 'ticket_closed' : 'ticket_reopened',
+      oldValue: nowClosed ? 'open' : 'closed',
+      newValue: nowClosed ? 'closed' : 'open',
+      changedBy: context.id,
+      changedByName: actorName,
+      fieldLabelSnapshot: 'Ticket status',
+    })
 
     const userRow = nowClosed
       ? db.prepare('SELECT name FROM users WHERE id = ?').get(context.id) as { name: string } | undefined
@@ -2567,6 +2660,77 @@ router.post('/:id/responses/:responseId/ticket/finalize', authenticateToken, (re
   } catch (err) {
     console.error('[collections] toggle ticket closed:', err)
     res.status(500).json({ error: 'Failed to update ticket' })
+  }
+})
+
+// GET /:id/responses/:responseId/ticket/history — list ticket history entries
+router.get('/:id/responses/:responseId/ticket/history', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const collectionId = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  if (!context || isNaN(collectionId) || isNaN(responseId)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canViewResponses(context)) { res.status(403).json({ error: 'Access denied' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(collectionId, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const ticket = db
+      .prepare('SELECT id FROM ticket_responses WHERE collection_response_id = ? AND collection_id = ?')
+      .get(responseId, collectionId) as { id: number } | undefined
+
+    if (!ticket) {
+      res.json([])
+      return
+    }
+
+    const rows = db.prepare(`
+      SELECT
+        id,
+        ticket_field_id,
+        ticket_field_key,
+        field_label_snapshot,
+        field_type_snapshot,
+        event_type,
+        old_value,
+        new_value,
+        changed_by,
+        changed_by_name,
+        changed_at
+      FROM ticket_history
+      WHERE ticket_response_id = ?
+      ORDER BY datetime(changed_at) DESC, id DESC
+    `).all(ticket.id) as Array<{
+      id: number
+      ticket_field_id: number | null
+      ticket_field_key: string | null
+      field_label_snapshot: string | null
+      field_type_snapshot: string | null
+      event_type: TicketHistoryEventType
+      old_value: string | null
+      new_value: string | null
+      changed_by: number | null
+      changed_by_name: string | null
+      changed_at: string
+    }>
+
+    res.json(rows.map(row => ({
+      id: row.id,
+      fieldId: row.ticket_field_id,
+      fieldKey: row.ticket_field_key,
+      fieldLabel: row.field_label_snapshot,
+      fieldType: row.field_type_snapshot,
+      eventType: row.event_type,
+      oldValue: row.old_value,
+      newValue: row.new_value,
+      changedBy: row.changed_by,
+      changedByName: row.changed_by_name,
+      changedAt: row.changed_at,
+    })))
+  } catch (err) {
+    console.error('[collections] get ticket history:', err)
+    res.status(500).json({ error: 'Failed to get ticket history' })
   }
 })
 

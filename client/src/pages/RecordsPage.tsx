@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Calendar, ClipboardList, Clipboard, LayoutGrid, Lock, LockOpen, Mail, MessageSquare, Save, Table2, Tag, Trash2, User, Download } from 'lucide-react'
+import { Calendar, ClipboardList, Clipboard, LayoutGrid, Lock, LockOpen, Mail, MessageSquare, Save, Table2, Tag, Trash2, User, Download, X } from 'lucide-react'
 import { getCollection, getComments, addComment, deleteComment, getResponses, listCollections, upsertStaffFields } from '../api/collections'
-import { getTicketFields, getTicket, saveTicket, finalizeTicket, getCollectionTickets } from '../api/tickets'
+import { getTicketFields, getTicket, saveTicket, finalizeTicket, getCollectionTickets, getTicketHistory } from '../api/tickets'
 import { getCategoryColorClasses } from '../utils/categoryColors'
-import type { Collection, CollectionField, CollectionResponse, SubmissionComment, TicketField, TicketResponse, CollectionTicketRow } from '../types'
+import type { Collection, CollectionField, CollectionResponse, SubmissionComment, TicketField, TicketResponse, CollectionTicketRow, TicketHistoryEntry } from '../types'
 import { useAuth } from '../contexts/AuthContext'
 
 type RecordsView = 'summary' | 'individual' | 'tickets'
+type SubmissionTab = 'general' | 'comments'
+type TicketDrawerTab = 'details' | 'history'
 
 interface SummaryDatum {
   label: string
@@ -471,6 +473,54 @@ function renderResponseValue(field: CollectionField | undefined, value: string |
   return <p className="text-sm text-[#1E293B] dark:text-[#F1F5F9] whitespace-pre-wrap">{raw}</p>
 }
 
+function renderTicketHistoryValue(fieldType: string | null | undefined, value: string | null) {
+  const raw = value ?? ''
+  if (!raw) {
+    return <span className="text-sm text-[#94A3B8] italic">Empty</span>
+  }
+
+  if (fieldType === 'multiple_choice') {
+    try {
+      const items = JSON.parse(raw) as string[]
+      if (Array.isArray(items)) {
+        return <span className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">{items.join(', ') || 'Empty'}</span>
+      }
+    } catch {
+      // Fall back to raw rendering.
+    }
+  }
+
+  if (fieldType === 'confirmation') {
+    return <span className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">{raw === 'true' ? 'Confirmed' : 'Not confirmed'}</span>
+  }
+
+  if (fieldType === 'signature') {
+    return <span className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">{raw.startsWith('data:image') ? 'Signature captured' : raw}</span>
+  }
+
+  if (fieldType === 'attachment') {
+    return <span className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">Attachment provided</span>
+  }
+
+  if (fieldType === 'custom_table' || fieldType === 'matrix_likert_scale') {
+    return (
+      <pre className="text-xs text-[#1E293B] dark:text-[#F1F5F9] whitespace-pre-wrap break-words font-mono bg-[#F8FAFC] dark:bg-[#0F172A] rounded p-2 border border-[#E2E8F0] dark:border-[#334155]">
+        {raw}
+      </pre>
+    )
+  }
+
+  return <span className="text-sm text-[#1E293B] dark:text-[#F1F5F9] whitespace-pre-wrap break-words">{raw}</span>
+}
+
+function formatTicketHistoryTimestamp(value: string): string {
+  const normalized = value.includes('T') ? value : value.replace(' ', 'T') + 'Z'
+  const date = new Date(normalized)
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
 function toCsvCell(value: string): string {
   if (/[",\n\r]/.test(value)) {
     return `"${value.replace(/"/g, '""')}"`
@@ -904,7 +954,7 @@ export default function RecordsPage() {
   const [staffEdits, setStaffEdits] = useState<Record<number, Record<number, string>>>({})
   const [staffSaveState, setStaffSaveState] = useState<Record<number, 'idle' | 'saving' | 'saved' | 'error'>>({})
   // Comments + tabs
-  const [submissionTab, setSubmissionTab] = useState<Record<number, 'general' | 'comments' | 'ticket'>>({})
+  const [submissionTab, setSubmissionTab] = useState<Record<number, SubmissionTab>>({})
   const [commentsByResponse, setCommentsByResponse] = useState<Record<number, SubmissionComment[]>>({})
   const [newCommentText, setNewCommentText] = useState<Record<number, string>>({})
   const [commentSubmitting, setCommentSubmitting] = useState<Record<number, boolean>>({})
@@ -915,6 +965,9 @@ export default function RecordsPage() {
   const [ticketSaveState, setTicketSaveState] = useState<Record<number, 'idle' | 'saving' | 'saved' | 'error'>>({})
   const [ticketFinalizing, setTicketFinalizing] = useState<Record<number, boolean>>({})
   const [showFinalizeConfirm, setShowFinalizeConfirm] = useState<number | null>(null)
+  const [ticketDrawer, setTicketDrawer] = useState<{ responseId: number; tab: TicketDrawerTab } | null>(null)
+  const [ticketHistoryByResponse, setTicketHistoryByResponse] = useState<Record<number, TicketHistoryEntry[] | 'loading'>>({})
+  const [ticketHistoryError, setTicketHistoryError] = useState<Record<number, string | null>>({})
   // All-tickets view
   const [allTickets, setAllTickets] = useState<CollectionTicketRow[]>([])
   const [ticketsLoading, setTicketsLoading] = useState(false)
@@ -960,6 +1013,9 @@ export default function RecordsPage() {
     // Reset tickets view when switching collections
     setAllTickets([])
     setTicketStatusFilter('all')
+    setTicketDrawer(null)
+    setTicketHistoryByResponse({})
+    setTicketHistoryError({})
   }, [selectedCollectionId])
 
   useEffect(() => {
@@ -978,11 +1034,10 @@ export default function RecordsPage() {
 
   // ── Ticket helpers ─────────────────────────────────────────────────────────
 
-  function openTicketTab(responseId: number) {
-    setSubmissionTab(prev => ({ ...prev, [responseId]: 'ticket' }))
-    if (ticketsByResponse[responseId] !== undefined) return
-    setTicketsByResponse(prev => ({ ...prev, [responseId]: 'loading' }))
+  function loadTicketRecord(responseId: number, force = false) {
     if (!selectedCollectionId) return
+    if (!force && ticketsByResponse[responseId] !== undefined) return
+    setTicketsByResponse(prev => ({ ...prev, [responseId]: 'loading' }))
     getTicket(selectedCollectionId, responseId)
       .then(ticket => {
         setTicketsByResponse(prev => ({ ...prev, [responseId]: ticket }))
@@ -997,6 +1052,25 @@ export default function RecordsPage() {
       .catch(() => setTicketsByResponse(prev => ({ ...prev, [responseId]: null })))
   }
 
+  function loadTicketHistoryForResponse(responseId: number, force = false) {
+    if (!selectedCollectionId) return
+    if (!force && ticketHistoryByResponse[responseId] !== undefined) return
+    setTicketHistoryByResponse(prev => ({ ...prev, [responseId]: 'loading' }))
+    setTicketHistoryError(prev => ({ ...prev, [responseId]: null }))
+    getTicketHistory(selectedCollectionId, responseId)
+      .then(entries => setTicketHistoryByResponse(prev => ({ ...prev, [responseId]: entries })))
+      .catch(err => {
+        setTicketHistoryByResponse(prev => ({ ...prev, [responseId]: [] }))
+        setTicketHistoryError(prev => ({ ...prev, [responseId]: (err as Error).message }))
+      })
+  }
+
+  function openTicketDrawer(responseId: number, tab: TicketDrawerTab = 'details') {
+    setTicketDrawer({ responseId, tab })
+    loadTicketRecord(responseId)
+    loadTicketHistoryForResponse(responseId)
+  }
+
   async function handleSaveTicketDraft(responseId: number) {
     if (!selectedCollectionId) return
     setTicketSaveState(prev => ({ ...prev, [responseId]: 'saving' }))
@@ -1007,6 +1081,7 @@ export default function RecordsPage() {
     try {
       const ticket = await saveTicket(selectedCollectionId, responseId, values)
       setTicketsByResponse(prev => ({ ...prev, [responseId]: ticket }))
+      loadTicketHistoryForResponse(responseId, true)
       setTicketSaveState(prev => ({ ...prev, [responseId]: 'saved' }))
       setTimeout(() => setTicketSaveState(prev => ({ ...prev, [responseId]: 'idle' })), 2500)
     } catch {
@@ -1020,6 +1095,12 @@ export default function RecordsPage() {
     try {
       const ticket = await finalizeTicket(selectedCollectionId, responseId)
       setTicketsByResponse(prev => ({ ...prev, [responseId]: ticket }))
+      loadTicketHistoryForResponse(responseId, true)
+      setAllTickets(prev => prev.map(row =>
+        row.collectionResponseId === responseId
+          ? { ...row, finalized: ticket.finalized, finalizedAt: ticket.finalizedAt, finalizedByName: ticket.finalizedByName }
+          : row
+      ))
       setShowFinalizeConfirm(null)
     } catch {
       // ignore; ticket remains
@@ -1115,6 +1196,20 @@ export default function RecordsPage() {
     () => collections.filter(item => (item.responseCount ?? 0) > 0),
     [collections]
   )
+
+  const activeTicketResponse = useMemo(
+    () => ticketDrawer ? responses.find(response => response.id === ticketDrawer.responseId) ?? null : null,
+    [responses, ticketDrawer]
+  )
+
+  const activeTicketData = activeTicketResponse ? ticketsByResponse[activeTicketResponse.id] : undefined
+  const activeTicketEdits = activeTicketResponse ? (ticketEdits[activeTicketResponse.id] ?? {}) : {}
+  const activeTicketSave = activeTicketResponse ? (ticketSaveState[activeTicketResponse.id] ?? 'idle') : 'idle'
+  const activeTicketFinalizing = activeTicketResponse ? (ticketFinalizing[activeTicketResponse.id] ?? false) : false
+  const activeTicketFinalized = activeTicketData && activeTicketData !== 'loading' && activeTicketData.finalized ? activeTicketData : null
+  const activeTicketDraft = activeTicketData && activeTicketData !== 'loading' && !activeTicketData.finalized ? activeTicketData : null
+  const activeTicketHistory = activeTicketResponse ? ticketHistoryByResponse[activeTicketResponse.id] : undefined
+  const activeTicketHistoryError = activeTicketResponse ? ticketHistoryError[activeTicketResponse.id] : null
 
   const fieldMap = useMemo(() => {
     const map = new Map<number, CollectionField>()
@@ -1694,14 +1789,8 @@ export default function RecordsPage() {
       {!loadingResponses && selectedCollection && responses.length > 0 && view === 'individual' && individualLayout === 'card' && (
         <div className="space-y-4">
           {responses.map(response => {
-            const activeTab = submissionTab[response.id] ?? 'general'
+            const activeTab = submissionTab[response.id] === 'comments' ? 'comments' : 'general'
             const comments = commentsByResponse[response.id] ?? []
-            const ticketData = ticketsByResponse[response.id]
-            const ticketEditsForResponse = ticketEdits[response.id] ?? {}
-            const ticketSave = ticketSaveState[response.id] ?? 'idle'
-            const isTicketFinalizing = ticketFinalizing[response.id] ?? false
-            const finalizedTicket = ticketData && ticketData !== 'loading' && ticketData.finalized ? ticketData : null
-            const draftTicket = ticketData && ticketData !== 'loading' && !ticketData.finalized ? ticketData : null
             return (
             <section
               key={response.id}
@@ -1751,8 +1840,8 @@ export default function RecordsPage() {
                 {ticketFieldsForCollection.length > 0 && (
                   <button
                     type="button"
-                    onClick={() => openTicketTab(response.id)}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border-b-2 transition-colors -mb-px ${activeTab === 'ticket' ? 'border-[#2563EB] text-[#2563EB]' : 'border-transparent text-[#64748B] hover:text-[#1E293B] dark:hover:text-[#F1F5F9]'}`}
+                    onClick={() => openTicketDrawer(response.id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border-b-2 transition-colors -mb-px ${ticketDrawer?.responseId === response.id ? 'border-[#2563EB] text-[#2563EB]' : 'border-transparent text-[#64748B] hover:text-[#1E293B] dark:hover:text-[#F1F5F9]'}`}
                   >
                     <Clipboard size={13} />
                     Ticket
@@ -1976,36 +2065,92 @@ export default function RecordsPage() {
                   </div>
                 </div>
               )}
+            </section>
+            )
+          })}
+        </div>
+      )}
 
-              {/* Ticket tab */}
-              {activeTab === 'ticket' && ticketData === 'loading' && (
+      {ticketDrawer && activeTicketResponse && (
+        <div className="fixed inset-0 z-50">
+          <button
+            type="button"
+            aria-label="Close ticket panel"
+            onClick={() => { setTicketDrawer(null); setShowFinalizeConfirm(null) }}
+            className="absolute inset-0 bg-slate-950/35"
+          />
+          <aside className="absolute right-0 top-0 h-full w-full max-w-2xl bg-white dark:bg-[#0F172A] border-l border-[#E2E8F0] dark:border-[#334155] shadow-2xl flex flex-col">
+            <div className="px-5 py-4 border-b border-[#E2E8F0] dark:border-[#334155] flex items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-[#94A3B8]">
+                  <Clipboard size={13} />
+                  Ticket
+                </div>
+                <h2 className="mt-2 text-lg font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Submission #{activeTicketResponse.id}</h2>
+                <p className="mt-1 text-sm text-[#64748B]">
+                  {activeTicketResponse.respondentName || 'Anonymous'}
+                  {activeTicketResponse.respondentEmail ? ` · ${activeTicketResponse.respondentEmail}` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setTicketDrawer(null); setShowFinalizeConfirm(null) }}
+                className="w-9 h-9 rounded-md flex items-center justify-center text-[#64748B] hover:text-[#1E293B] hover:bg-[#F8FAFC] dark:hover:bg-[#1E293B] dark:hover:text-[#F1F5F9] transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="px-5 border-b border-[#E2E8F0] dark:border-[#334155] flex gap-1">
+              <button
+                type="button"
+                onClick={() => setTicketDrawer(prev => prev ? { ...prev, tab: 'details' } : prev)}
+                className={`px-3 py-3 text-sm font-medium border-b-2 transition-colors -mb-px ${ticketDrawer.tab === 'details' ? 'border-[#2563EB] text-[#2563EB]' : 'border-transparent text-[#64748B] hover:text-[#1E293B] dark:hover:text-[#F1F5F9]'}`}
+              >
+                Details
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTicketDrawer(prev => prev ? { ...prev, tab: 'history' } : prev)
+                  loadTicketHistoryForResponse(activeTicketResponse.id)
+                }}
+                className={`px-3 py-3 text-sm font-medium border-b-2 transition-colors -mb-px ${ticketDrawer.tab === 'history' ? 'border-[#2563EB] text-[#2563EB]' : 'border-transparent text-[#64748B] hover:text-[#1E293B] dark:hover:text-[#F1F5F9]'}`}
+              >
+                History
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-5">
+              {ticketDrawer.tab === 'details' && activeTicketData === 'loading' && (
                 <p className="text-sm text-[#94A3B8]">Loading ticket…</p>
               )}
-              {activeTab === 'ticket' && finalizedTicket && (
+
+              {ticketDrawer.tab === 'details' && activeTicketFinalized && (
                 <div className="space-y-4">
                   <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400 font-medium">
                     <Lock size={14} />
                     Ticket closed
-                    {finalizedTicket.finalizedAt && (
+                    {activeTicketFinalized.finalizedAt && (
                       <span className="text-xs text-[#94A3B8] font-normal ml-1">
-                        {new Date(finalizedTicket.finalizedAt.includes('T') ? finalizedTicket.finalizedAt : finalizedTicket.finalizedAt.replace(' ', 'T') + 'Z').toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                        {finalizedTicket.finalizedByName ? ` by ${finalizedTicket.finalizedByName}` : ''}
+                        {formatTicketHistoryTimestamp(activeTicketFinalized.finalizedAt)}
+                        {activeTicketFinalized.finalizedByName ? ` by ${activeTicketFinalized.finalizedByName}` : ''}
                       </span>
                     )}
                     <button
                       type="button"
-                      onClick={() => void handleFinalizeTicket(response.id)}
-                      disabled={isTicketFinalizing}
+                      onClick={() => void handleFinalizeTicket(activeTicketResponse.id)}
+                      disabled={activeTicketFinalizing}
                       className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] dark:text-[#94A3B8] text-xs font-medium hover:bg-[#F8FAFC] dark:hover:bg-[#1E293B] disabled:opacity-50 transition-colors"
                     >
                       <LockOpen size={12} />
-                      {isTicketFinalizing ? 'Re-opening…' : 'Re-open'}
+                      {activeTicketFinalizing ? 'Re-opening…' : 'Re-open'}
                     </button>
                   </div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {ticketFieldsForCollection.map(field => {
                       if (field.id === undefined) return null
-                      const val = finalizedTicket.values.find(v => v.fieldId === field.id)?.value ?? ''
+                      const val = activeTicketFinalized.values.find(v => v.fieldId === field.id)?.value ?? ''
                       return (
                         <div key={field.id} className="rounded border border-[#E2E8F0] dark:border-[#334155] p-3 bg-[#F8FAFC] dark:bg-[#0F172A]">
                           <p className="text-xs font-medium uppercase tracking-wide text-[#64748B] mb-1">{field.label}</p>
@@ -2016,7 +2161,8 @@ export default function RecordsPage() {
                   </div>
                 </div>
               )}
-              {activeTab === 'ticket' && !finalizedTicket && ticketData !== 'loading' && (
+
+              {ticketDrawer.tab === 'details' && !activeTicketFinalized && activeTicketData !== 'loading' && (
                 <div className="space-y-4">
                   {ticketFieldsForCollection.map(field => {
                     if (field.id === undefined) return null
@@ -2028,50 +2174,50 @@ export default function RecordsPage() {
                         </label>
                         <TicketFieldEditor
                           field={field}
-                          value={ticketEditsForResponse[field.id] ?? (draftTicket ? (draftTicket.values.find(v => v.fieldId === field.id)?.value ?? '') : '')}
+                          value={activeTicketEdits[field.id] ?? (activeTicketDraft ? (activeTicketDraft.values.find(v => v.fieldId === field.id)?.value ?? '') : '')}
                           onChange={v => setTicketEdits(prev => ({
                             ...prev,
-                            [response.id]: { ...(prev[response.id] ?? {}), [field.id as number]: v },
+                            [activeTicketResponse.id]: { ...(prev[activeTicketResponse.id] ?? {}), [field.id as number]: v },
                           }))}
                         />
                       </div>
                     )
                   })}
-                  {ticketSave === 'error' && (
+                  {activeTicketSave === 'error' && (
                     <p className="text-xs text-red-500">Failed to save. Please try again.</p>
                   )}
-                  <div className="flex items-center gap-3 pt-1">
+                  <div className="flex items-center gap-3 pt-1 flex-wrap">
                     <button
                       type="button"
-                      onClick={() => void handleSaveTicketDraft(response.id)}
-                      disabled={ticketSave === 'saving'}
+                      onClick={() => void handleSaveTicketDraft(activeTicketResponse.id)}
+                      disabled={activeTicketSave === 'saving'}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#2563EB] text-white text-sm font-medium hover:bg-[#1D4ED8] disabled:opacity-50 transition-colors"
                     >
                       <Save size={13} />
-                      {ticketSave === 'saving' ? 'Saving…' : ticketSave === 'saved' ? 'Saved!' : 'Save Draft'}
+                      {activeTicketSave === 'saving' ? 'Saving…' : activeTicketSave === 'saved' ? 'Saved!' : 'Save Draft'}
                     </button>
                     <button
                       type="button"
-                      onClick={() => setShowFinalizeConfirm(response.id)}
-                      disabled={isTicketFinalizing}
+                      onClick={() => setShowFinalizeConfirm(activeTicketResponse.id)}
+                      disabled={activeTicketFinalizing}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-green-600 text-green-700 dark:text-green-400 text-sm font-medium hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50 transition-colors"
                     >
                       <Lock size={13} />
                       Close
                     </button>
                   </div>
-                  {showFinalizeConfirm === response.id && (
+                  {showFinalizeConfirm === activeTicketResponse.id && (
                     <div className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-3">
                       <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Close this ticket?</p>
                       <p className="text-xs text-amber-700 dark:text-amber-400">Closing marks the ticket as done. It can be re-opened at any time.</p>
                       <div className="flex gap-2">
                         <button
                           type="button"
-                          onClick={() => void handleFinalizeTicket(response.id)}
-                          disabled={isTicketFinalizing}
+                          onClick={() => void handleFinalizeTicket(activeTicketResponse.id)}
+                          disabled={activeTicketFinalizing}
                           className="px-3 py-1.5 rounded bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
                         >
-                          {isTicketFinalizing ? 'Closing…' : 'Yes, Close'}
+                          {activeTicketFinalizing ? 'Closing…' : 'Yes, Close'}
                         </button>
                         <button
                           type="button"
@@ -2085,9 +2231,73 @@ export default function RecordsPage() {
                   )}
                 </div>
               )}
-            </section>
-            )
-          })}
+
+              {ticketDrawer.tab === 'history' && activeTicketHistory === 'loading' && (
+                <p className="text-sm text-[#94A3B8]">Loading history…</p>
+              )}
+
+              {ticketDrawer.tab === 'history' && activeTicketHistory !== 'loading' && (
+                <div className="space-y-3">
+                  {activeTicketHistoryError && (
+                    <div className="rounded border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+                      {activeTicketHistoryError}
+                    </div>
+                  )}
+
+                  {(activeTicketHistory ?? []).length === 0 && (
+                    <div className="rounded border border-dashed border-[#CBD5E1] dark:border-[#334155] px-4 py-6 text-sm text-[#94A3B8] text-center">
+                      No ticket history yet.
+                    </div>
+                  )}
+
+                  {(activeTicketHistory ?? []).map(entry => {
+                    const isFieldChange = entry.eventType === 'field_changed'
+                    const eventLabel = entry.eventType === 'ticket_closed'
+                      ? 'Closed ticket'
+                      : entry.eventType === 'ticket_reopened'
+                        ? 'Re-opened ticket'
+                        : `Updated ${entry.fieldLabel ?? 'field'}`
+
+                    return (
+                      <div key={entry.id} className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A] p-4 space-y-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2 text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9]">
+                              <ClipboardList size={14} className="text-[#2563EB]" />
+                              {eventLabel}
+                            </div>
+                            <p className="mt-1 text-xs text-[#64748B]">
+                              {entry.changedByName ?? 'Unknown user'} · {formatTicketHistoryTimestamp(entry.changedAt)}
+                            </p>
+                          </div>
+                          <span className="inline-flex items-center rounded-full bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] px-2 py-0.5 text-[11px] font-medium text-[#64748B]">
+                            {entry.eventType === 'field_changed' ? 'Field change' : 'Status'}
+                          </span>
+                        </div>
+
+                        {isFieldChange ? (
+                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                            <div className="rounded border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#1E293B] p-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-[#94A3B8] mb-2">Previous</p>
+                              {renderTicketHistoryValue(entry.fieldType, entry.oldValue)}
+                            </div>
+                            <div className="rounded border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#1E293B] p-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-[#94A3B8] mb-2">New</p>
+                              {renderTicketHistoryValue(entry.fieldType, entry.newValue)}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="rounded border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#1E293B] p-3 text-sm text-[#1E293B] dark:text-[#F1F5F9]">
+                            {renderTicketHistoryValue(entry.fieldType, entry.newValue)}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </aside>
         </div>
       )}
 
@@ -2201,7 +2411,7 @@ export default function RecordsPage() {
                                 setView('individual')
                                 setIndividualLayout('card')
                                 setTimeout(() => {
-                                  setSubmissionTab(prev => ({ ...prev, [ticket.collectionResponseId]: 'ticket' }))
+                                  openTicketDrawer(ticket.collectionResponseId)
                                 }, 50)
                               }}
                               className="text-xs text-[#2563EB] hover:underline"

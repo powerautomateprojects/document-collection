@@ -1,4 +1,4 @@
-import type { TicketField, TicketResponse, CollectionTicketRow } from '../types'
+import type { TicketField, TicketResponse, CollectionTicketRow, TicketHistoryEntry } from '../types'
 import { authHeaders, handleUnauthorizedResponse } from './authEvents'
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -70,4 +70,14 @@ export async function getCollectionTickets(collectionId: number): Promise<Collec
     headers: authHeaders(),
   })
   return handleResponse<CollectionTicketRow[]>(res)
+}
+
+export async function getTicketHistory(
+  collectionId: number,
+  responseId: number,
+): Promise<TicketHistoryEntry[]> {
+  const res = await fetch(`/api/collections/${collectionId}/responses/${responseId}/ticket/history`, {
+    headers: authHeaders(),
+  })
+  return handleResponse<TicketHistoryEntry[]>(res)
 }

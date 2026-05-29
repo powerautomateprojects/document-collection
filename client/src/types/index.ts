@@ -161,6 +161,20 @@ export interface TicketResponse {
   values: { fieldId: number; value: string | null }[]
 }
 
+export interface TicketHistoryEntry {
+  id: number
+  fieldId: number | null
+  fieldKey: string | null
+  fieldLabel: string | null
+  fieldType: FieldType | null
+  eventType: 'field_changed' | 'ticket_closed' | 'ticket_reopened'
+  oldValue: string | null
+  newValue: string | null
+  changedBy: number | null
+  changedByName: string | null
+  changedAt: string
+}
+
 export interface CollectionTicketRow {
   id: number
   collectionResponseId: number
