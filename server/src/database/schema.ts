@@ -1,5 +1,14 @@
 import type { AppDatabase } from './types'
 
+function tableHasColumn(db: AppDatabase, tableName: string, columnName: string): boolean {
+  try {
+    const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
+    return columns.some(column => column.name === columnName)
+  } catch {
+    return false
+  }
+}
+
 export function createSchema(db: AppDatabase): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS organizations (
@@ -263,9 +272,36 @@ export function createSchema(db: AppDatabase): void {
   `)
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_templates (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+      title           TEXT    NOT NULL,
+      description     TEXT,
+      created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      is_active       INTEGER NOT NULL DEFAULT 1,
+      created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS collection_ticket_templates (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      collection_id      INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      ticket_template_id INTEGER NOT NULL REFERENCES ticket_templates(id) ON DELETE CASCADE,
+      display_order      INTEGER NOT NULL DEFAULT 0,
+      is_active          INTEGER NOT NULL DEFAULT 1,
+      created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(collection_id, ticket_template_id)
+    );
+  `)
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS ticket_fields (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      collection_id INTEGER REFERENCES collections(id) ON DELETE CASCADE,
+      ticket_template_id INTEGER REFERENCES ticket_templates(id) ON DELETE CASCADE,
       field_key     TEXT,
       type          TEXT    NOT NULL CHECK(type IN (
                       'short_text','date','long_text','single_choice','multiple_choice',
@@ -297,8 +333,9 @@ export function createSchema(db: AppDatabase): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ticket_responses (
       id                     INTEGER PRIMARY KEY AUTOINCREMENT,
-      collection_response_id INTEGER NOT NULL UNIQUE REFERENCES collection_responses(id) ON DELETE CASCADE,
+      collection_response_id INTEGER NOT NULL REFERENCES collection_responses(id) ON DELETE CASCADE,
       collection_id          INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      ticket_template_id     INTEGER REFERENCES ticket_templates(id) ON DELETE CASCADE,
       filled_by              INTEGER REFERENCES users(id) ON DELETE SET NULL,
       filled_at              TEXT,
       finalized              INTEGER NOT NULL DEFAULT 0,
@@ -307,6 +344,25 @@ export function createSchema(db: AppDatabase): void {
       created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
       updated_at             TEXT    NOT NULL DEFAULT (datetime('now'))
     );
+  `)
+
+  if (tableHasColumn(db, 'ticket_responses', 'ticket_template_id')) {
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_responses_response_template
+        ON ticket_responses(collection_response_id, ticket_template_id);
+    `)
+  }
+
+  if (tableHasColumn(db, 'ticket_fields', 'ticket_template_id')) {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_ticket_fields_template
+        ON ticket_fields(ticket_template_id, sort_order, id);
+    `)
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_collection_ticket_templates_collection
+      ON collection_ticket_templates(collection_id, display_order, id);
   `)
 
   db.exec(`

@@ -6,49 +6,6 @@ import { getPublicSetting } from '../api/settings'
 import { getPublicSummaryStats, type PublicSummaryStats } from '../api/stats'
 import type { User, UserRole } from '../types'
 
-const FALLBACK_USERS: User[] = [
-  {
-    id: 1,
-    name: 'Jon Rivera',
-    email: 'jon@datacollectionpro.com',
-    role: 'administrator',
-    organizationId: 1,
-    organizationName: 'TSD',
-    organizationSlug: 'tsd',
-    createdAt: '',
-  },
-  {
-    id: 2,
-    name: 'Sarah Chen',
-    email: 'sarah@datacollectionpro.com',
-    role: 'team_manager',
-    organizationId: 1,
-    organizationName: 'TSD',
-    organizationSlug: 'tsd',
-    createdAt: '',
-  },
-  {
-    id: 3,
-    name: 'Mike Torres',
-    email: 'mike@datacollectionpro.com',
-    role: 'user',
-    organizationId: 1,
-    organizationName: 'TSD',
-    organizationSlug: 'tsd',
-    createdAt: '',
-  },
-  {
-    id: 0,
-    name: 'Alex Kim',
-    email: 'alex@datacollectionpro.com',
-    role: 'reviewer',
-    organizationId: 1,
-    organizationName: 'TSD',
-    organizationSlug: 'tsd',
-    createdAt: '',
-  },
-]
-
 const ROLE_LABELS: Record<UserRole, string> = {
   super_admin: 'SUPER ADMIN',
   administrator: 'ADMINISTRATOR',
@@ -91,7 +48,8 @@ export default function LoginPage() {
   const navigate = useNavigate()
   const { signIn } = useAuth()
 
-  const [existingUsers, setExistingUsers] = useState<User[]>(FALLBACK_USERS)
+  const [existingUsers, setExistingUsers] = useState<User[]>([])
+  const [loadingUsers, setLoadingUsers] = useState(true)
 
   // Derive unique orgs from the loaded users list
   const organizations = useMemo(() => {
@@ -109,9 +67,7 @@ export default function LoginPage() {
       .sort(compareOrganizationsByDisplayLabel)
   }, [existingUsers])
 
-  const [selectedOrgId, setSelectedOrgId] = useState<number | null>(
-    FALLBACK_USERS[0].organizationId ?? null
-  )
+  const [selectedOrgId, setSelectedOrgId] = useState<number | null>(null)
 
   const filteredUsers = useMemo(
     () =>
@@ -121,9 +77,7 @@ export default function LoginPage() {
     [existingUsers, selectedOrgId]
   )
 
-  const [selectedUserId, setSelectedUserId] = useState<string>(
-    String(FALLBACK_USERS[0].id)
-  )
+  const [selectedUserId, setSelectedUserId] = useState<string>('')
   const [signingIn, setSigningIn] = useState(false)
   const [loginMessage, setLoginMessage] = useState(
     'Choose an existing user profile or register a new account to enter the data workspace.'
@@ -175,8 +129,11 @@ export default function LoginPage() {
         })
       })
       .catch(() => {
-        /* keep fallback users */
+        setExistingUsers([])
+        setSelectedOrgId(null)
+        setSelectedUserId('')
       })
+      .finally(() => setLoadingUsers(false))
   }, [])
 
   const [error, setError] = useState<string | null>(null)
@@ -295,7 +252,7 @@ export default function LoginPage() {
             Select Existing User
           </h2>
           <p className="text-sm text-[#64748B] dark:text-[#94A3B8] mb-5">
-            Pick a profile to continue.
+            {loadingUsers ? 'Loading available profiles…' : 'Pick a profile to continue.'}
           </p>
 
           {/* Organization dropdown */}
@@ -305,9 +262,12 @@ export default function LoginPage() {
           <select
             value={selectedOrgId ?? ''}
             onChange={e => setSelectedOrgId(e.target.value ? Number(e.target.value) : null)}
+            disabled={loadingUsers || organizations.length === 0}
             className={INPUT_CLASS + ' mb-4 appearance-none cursor-pointer'}
             style={{ backgroundImage: 'none' }}
           >
+            {loadingUsers && <option value="">Loading organizations…</option>}
+            {!loadingUsers && organizations.length === 0 && <option value="">No organizations available</option>}
             {organizations.map(org => (
               <option key={org.id} value={org.id}>
                 {org.description ? `${org.description} (${org.name})` : org.name}
@@ -322,10 +282,12 @@ export default function LoginPage() {
           <select
             value={selectedUserId}
             onChange={e => setSelectedUserId(e.target.value)}
-            disabled={filteredUsers.length === 0}
+            disabled={loadingUsers || filteredUsers.length === 0}
             className={INPUT_CLASS + ' mb-3 appearance-none cursor-pointer'}
             style={{ backgroundImage: 'none' }}
           >
+            {loadingUsers && <option value="">Loading users…</option>}
+            {!loadingUsers && filteredUsers.length === 0 && <option value="">No users available</option>}
             {filteredUsers.map(u => (
               <option key={u.id} value={String(u.id)}>
                 {u.name} · {ROLE_LABELS[u.role]} ({u.organizationName ?? 'Unassigned'})
@@ -335,7 +297,7 @@ export default function LoginPage() {
 
           <button
             onClick={handleSelectSignIn}
-            disabled={signingIn || existingUsers.length === 0}
+            disabled={loadingUsers || signingIn || existingUsers.length === 0}
             className="w-full bg-[#1E293B] dark:bg-[#F1F5F9] text-white dark:text-[#0F172A] font-semibold py-2.5 text-sm tracking-wide rounded-[2px] hover:bg-[#0F172A] dark:hover:bg-white transition-colors disabled:opacity-50 mb-8"
           >
             {signingIn ? 'Signing in…' : 'Sign In as Selected User'}

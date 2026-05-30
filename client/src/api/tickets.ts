@@ -1,4 +1,11 @@
-import type { TicketField, TicketResponse, CollectionTicketRow, TicketHistoryEntry } from '../types'
+import type {
+  TicketField,
+  TicketResponse,
+  CollectionTicketRow,
+  TicketHistoryEntry,
+  CollectionTicketTemplate,
+  ResponseTicketSummary,
+} from '../types'
 import { authHeaders, handleUnauthorizedResponse } from './authEvents'
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -70,6 +77,83 @@ export async function getCollectionTickets(collectionId: number): Promise<Collec
     headers: authHeaders(),
   })
   return handleResponse<CollectionTicketRow[]>(res)
+}
+
+export async function getCollectionTicketTemplates(collectionId: number): Promise<CollectionTicketTemplate[]> {
+  const res = await fetch(`/api/collections/${collectionId}/ticket-templates`, {
+    headers: authHeaders(),
+  })
+  return handleResponse<CollectionTicketTemplate[]>(res)
+}
+
+export async function saveCollectionTicketTemplates(
+  collectionId: number,
+  templateIds: number[],
+): Promise<CollectionTicketTemplate[]> {
+  const res = await fetch(`/api/collections/${collectionId}/ticket-templates`, {
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify({ templateIds }),
+  })
+  return handleResponse<CollectionTicketTemplate[]>(res)
+}
+
+export async function getResponseTickets(
+  collectionId: number,
+  responseId: number,
+): Promise<ResponseTicketSummary[]> {
+  const res = await fetch(`/api/collections/${collectionId}/responses/${responseId}/tickets`, {
+    headers: authHeaders(),
+  })
+  return handleResponse<ResponseTicketSummary[]>(res)
+}
+
+export async function getTemplateTicket(
+  collectionId: number,
+  responseId: number,
+  templateId: number,
+): Promise<TicketResponse | null> {
+  const res = await fetch(`/api/collections/${collectionId}/responses/${responseId}/tickets/${templateId}`, {
+    headers: authHeaders(),
+  })
+  return handleResponse<TicketResponse | null>(res)
+}
+
+export async function saveTemplateTicket(
+  collectionId: number,
+  responseId: number,
+  templateId: number,
+  values: { fieldId: number; value: string }[],
+): Promise<TicketResponse> {
+  const res = await fetch(`/api/collections/${collectionId}/responses/${responseId}/tickets/${templateId}`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ values }),
+  })
+  return handleResponse<TicketResponse>(res)
+}
+
+export async function finalizeTemplateTicket(
+  collectionId: number,
+  responseId: number,
+  templateId: number,
+): Promise<TicketResponse> {
+  const res = await fetch(
+    `/api/collections/${collectionId}/responses/${responseId}/tickets/${templateId}/finalize`,
+    { method: 'POST', headers: authHeaders() },
+  )
+  return handleResponse<TicketResponse>(res)
+}
+
+export async function getTemplateTicketHistory(
+  collectionId: number,
+  responseId: number,
+  templateId: number,
+): Promise<TicketHistoryEntry[]> {
+  const res = await fetch(`/api/collections/${collectionId}/responses/${responseId}/tickets/${templateId}/history`, {
+    headers: authHeaders(),
+  })
+  return handleResponse<TicketHistoryEntry[]>(res)
 }
 
 export async function getTicketHistory(

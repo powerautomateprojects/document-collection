@@ -86,6 +86,264 @@ function rebuildCollectionTableColumns(database: AppDatabase, preserveListOption
   }
 }
 
+function rebuildTicketFields(database: AppDatabase): void {
+  const existingCols = database
+    .prepare(`PRAGMA table_info(ticket_fields)`)
+    .all() as Array<{ name: string }>
+  const ticketFieldCols = new Set(existingCols.map(column => column.name))
+  const ticketTemplateIdExpr = ticketFieldCols.has('ticket_template_id') ? 'ticket_template_id' : 'NULL'
+  const subtitleExpr = ticketFieldCols.has('subtitle') ? 'subtitle' : 'NULL'
+  const pageNumberExpr = ticketFieldCols.has('page_number') ? 'COALESCE(page_number, 1)' : '1'
+  const displayStyleExpr = ticketFieldCols.has('display_style') ? "COALESCE(display_style, 'radio')" : "'radio'"
+
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.transaction(() => {
+      database.prepare('ALTER TABLE ticket_fields RENAME TO ticket_fields_old').run()
+      database.prepare(`
+        CREATE TABLE ticket_fields (
+          id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+          collection_id      INTEGER REFERENCES collections(id) ON DELETE CASCADE,
+          ticket_template_id INTEGER REFERENCES ticket_templates(id) ON DELETE CASCADE,
+          field_key          TEXT,
+          type               TEXT    NOT NULL CHECK(type IN (
+                               'short_text','date','long_text','single_choice','multiple_choice',
+                               'attachment','signature','confirmation','custom_table','rating','comment','matrix_likert_scale',
+                               'location'
+                             )),
+          label              TEXT    NOT NULL,
+          subtitle           TEXT,
+          page_number        INTEGER NOT NULL DEFAULT 1,
+          required           INTEGER NOT NULL DEFAULT 0,
+          options            TEXT,
+          display_style      TEXT    NOT NULL DEFAULT 'radio',
+          sort_order         INTEGER NOT NULL DEFAULT 0
+        )
+      `).run()
+      database.prepare(`
+        INSERT INTO ticket_fields (
+          id,
+          collection_id,
+          ticket_template_id,
+          field_key,
+          type,
+          label,
+          subtitle,
+          page_number,
+          required,
+          options,
+          display_style,
+          sort_order
+        )
+        SELECT
+          id,
+          collection_id,
+          ${ticketTemplateIdExpr},
+          COALESCE(NULLIF(trim(field_key), ''), 'tf-' || id),
+          type,
+          label,
+          ${subtitleExpr},
+          ${pageNumberExpr},
+          required,
+          options,
+          ${displayStyleExpr},
+          sort_order
+        FROM ticket_fields_old
+      `).run()
+      database.prepare('DROP TABLE ticket_fields_old').run()
+    })()
+    console.log('[db] Migration: rebuilt ticket_fields for template ownership')
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+function rebuildTicketTableColumns(database: AppDatabase, preserveListOptions: boolean): void {
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.transaction(() => {
+      database.prepare('ALTER TABLE ticket_table_columns RENAME TO ticket_table_columns_old').run()
+      database.prepare(`
+        CREATE TABLE ticket_table_columns (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          ticket_field_id INTEGER NOT NULL REFERENCES ticket_fields(id) ON DELETE CASCADE,
+          name            TEXT    NOT NULL,
+          col_type        TEXT    NOT NULL DEFAULT 'text'
+                                   CHECK(col_type IN ('text','number','date','checkbox','list')),
+          list_options    TEXT,
+          sort_order      INTEGER NOT NULL DEFAULT 0
+        )
+      `).run()
+      database.prepare(`
+        INSERT INTO ticket_table_columns (id, ticket_field_id, name, col_type, list_options, sort_order)
+        SELECT
+          id,
+          ticket_field_id,
+          name,
+          CASE
+            WHEN col_type IN ('text','number','date','checkbox','list') THEN col_type
+            ELSE 'text'
+          END,
+          ${preserveListOptions ? 'list_options' : 'NULL'},
+          sort_order
+        FROM ticket_table_columns_old
+      `).run()
+      database.prepare('DROP TABLE ticket_table_columns_old').run()
+    })()
+    console.log('[db] Migration: rebuilt ticket_table_columns to refresh ticket_fields foreign key')
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+function rebuildTicketResponses(database: AppDatabase): void {
+  const existingCols = database
+    .prepare(`PRAGMA table_info(ticket_responses)`)
+    .all() as Array<{ name: string }>
+  const ticketResponseCols = new Set(existingCols.map(column => column.name))
+  const ticketTemplateIdExpr = ticketResponseCols.has('ticket_template_id') ? 'ticket_template_id' : 'NULL'
+
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.transaction(() => {
+      database.prepare('ALTER TABLE ticket_responses RENAME TO ticket_responses_old').run()
+      database.prepare(`
+        CREATE TABLE ticket_responses (
+          id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+          collection_response_id INTEGER NOT NULL REFERENCES collection_responses(id) ON DELETE CASCADE,
+          collection_id          INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+          ticket_template_id     INTEGER REFERENCES ticket_templates(id) ON DELETE CASCADE,
+          filled_by              INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          filled_at              TEXT,
+          finalized              INTEGER NOT NULL DEFAULT 0,
+          finalized_at           TEXT,
+          finalized_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+          updated_at             TEXT    NOT NULL DEFAULT (datetime('now'))
+        )
+      `).run()
+      database.prepare(`
+        INSERT INTO ticket_responses (
+          id,
+          collection_response_id,
+          collection_id,
+          ticket_template_id,
+          filled_by,
+          filled_at,
+          finalized,
+          finalized_at,
+          finalized_by,
+          created_at,
+          updated_at
+        )
+        SELECT
+          id,
+          collection_response_id,
+          collection_id,
+          ${ticketTemplateIdExpr},
+          filled_by,
+          filled_at,
+          finalized,
+          finalized_at,
+          finalized_by,
+          created_at,
+          updated_at
+        FROM ticket_responses_old
+      `).run()
+      database.prepare('DROP TABLE ticket_responses_old').run()
+    })()
+    console.log('[db] Migration: rebuilt ticket_responses for multi-ticket support')
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+function rebuildTicketResponseValues(database: AppDatabase): void {
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.transaction(() => {
+      database.prepare('ALTER TABLE ticket_response_values RENAME TO ticket_response_values_old').run()
+      database.prepare(`
+        CREATE TABLE ticket_response_values (
+          id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+          ticket_response_id INTEGER NOT NULL REFERENCES ticket_responses(id) ON DELETE CASCADE,
+          ticket_field_id    INTEGER NOT NULL REFERENCES ticket_fields(id),
+          value              TEXT,
+          UNIQUE(ticket_response_id, ticket_field_id)
+        )
+      `).run()
+      database.prepare(`
+        INSERT INTO ticket_response_values (id, ticket_response_id, ticket_field_id, value)
+        SELECT id, ticket_response_id, ticket_field_id, value
+        FROM ticket_response_values_old
+      `).run()
+      database.prepare('DROP TABLE ticket_response_values_old').run()
+    })()
+    console.log('[db] Migration: rebuilt ticket_response_values to refresh ticket foreign keys')
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+function rebuildTicketHistory(database: AppDatabase): void {
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.transaction(() => {
+      database.prepare('ALTER TABLE ticket_history RENAME TO ticket_history_old').run()
+      database.prepare(`
+        CREATE TABLE ticket_history (
+          id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+          ticket_response_id   INTEGER NOT NULL REFERENCES ticket_responses(id) ON DELETE CASCADE,
+          ticket_field_id      INTEGER,
+          ticket_field_key     TEXT,
+          field_label_snapshot TEXT,
+          field_type_snapshot  TEXT,
+          event_type           TEXT NOT NULL CHECK(event_type IN ('field_changed', 'ticket_closed', 'ticket_reopened')),
+          old_value            TEXT,
+          new_value            TEXT,
+          changed_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          changed_by_name      TEXT,
+          changed_at           TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `).run()
+      database.prepare(`
+        INSERT INTO ticket_history (
+          id,
+          ticket_response_id,
+          ticket_field_id,
+          ticket_field_key,
+          field_label_snapshot,
+          field_type_snapshot,
+          event_type,
+          old_value,
+          new_value,
+          changed_by,
+          changed_by_name,
+          changed_at
+        )
+        SELECT
+          id,
+          ticket_response_id,
+          ticket_field_id,
+          ticket_field_key,
+          field_label_snapshot,
+          field_type_snapshot,
+          event_type,
+          old_value,
+          new_value,
+          changed_by,
+          changed_by_name,
+          changed_at
+        FROM ticket_history_old
+      `).run()
+      database.prepare('DROP TABLE ticket_history_old').run()
+    })()
+    console.log('[db] Migration: rebuilt ticket_history to refresh ticket_responses foreign key')
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
 function slugifyOrganizationName(name: string): string {
   return name
     .trim()
@@ -750,6 +1008,176 @@ function runMigrations(db: AppDatabase): void {
       )
     `)
     console.log('[db] Migration: created notification_deliveries table')
+  }
+
+  if (!tableExists(db, 'ticket_templates')) {
+    db.exec(`
+      CREATE TABLE ticket_templates (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+        title           TEXT    NOT NULL,
+        description     TEXT,
+        created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        is_active       INTEGER NOT NULL DEFAULT 1,
+        created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+      )
+    `)
+    console.log('[db] Migration: created ticket_templates table')
+  }
+
+  if (!tableExists(db, 'collection_ticket_templates')) {
+    db.exec(`
+      CREATE TABLE collection_ticket_templates (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        collection_id      INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+        ticket_template_id INTEGER NOT NULL REFERENCES ticket_templates(id) ON DELETE CASCADE,
+        display_order      INTEGER NOT NULL DEFAULT 0,
+        is_active          INTEGER NOT NULL DEFAULT 1,
+        created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(collection_id, ticket_template_id)
+      )
+    `)
+    console.log('[db] Migration: created collection_ticket_templates table')
+  }
+
+  const existingTicketFieldCols = db
+    .prepare(`PRAGMA table_info(ticket_fields)`)
+    .all() as unknown as { name: string }[]
+  const ticketFieldColNames = new Set(existingTicketFieldCols.map(c => c.name))
+  const ticketFieldsSqlRow = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='ticket_fields'`)
+    .get() as unknown as { sql: string } | undefined
+  const ticketFieldsNeedRebuild =
+    !ticketFieldColNames.has('ticket_template_id') ||
+    (ticketFieldsSqlRow?.sql?.includes('collection_id INTEGER NOT NULL') ?? false) ||
+    !(ticketFieldsSqlRow?.sql?.includes("'location'") ?? false)
+
+  if (ticketFieldsNeedRebuild) {
+    rebuildTicketFields(db)
+  }
+
+  const existingTicketTableColumnCols = db
+    .prepare(`PRAGMA table_info(ticket_table_columns)`)
+    .all() as unknown as { name: string }[]
+  const ticketTableColumnNames = new Set(existingTicketTableColumnCols.map(c => c.name))
+  const ticketTableColumnsSqlRow = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='ticket_table_columns'`)
+    .get() as unknown as { sql: string } | undefined
+  const ticketTableSupportsListType = ticketTableColumnsSqlRow?.sql?.includes("'list'") ?? false
+
+  if (
+    !ticketTableColumnNames.has('list_options') ||
+    !ticketTableSupportsListType ||
+    hasForeignKeyTarget(db, 'ticket_table_columns', 'ticket_fields_old')
+  ) {
+    rebuildTicketTableColumns(db, ticketTableColumnNames.has('list_options'))
+  }
+
+  const existingTicketResponseCols = db
+    .prepare(`PRAGMA table_info(ticket_responses)`)
+    .all() as unknown as { name: string }[]
+  const ticketResponseColNames = new Set(existingTicketResponseCols.map(c => c.name))
+  const ticketResponsesSqlRow = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='ticket_responses'`)
+    .get() as unknown as { sql: string } | undefined
+  const ticketResponsesNeedRebuild =
+    !ticketResponseColNames.has('ticket_template_id') ||
+    (ticketResponsesSqlRow?.sql?.includes('collection_response_id INTEGER NOT NULL UNIQUE') ?? false)
+
+  if (ticketResponsesNeedRebuild) {
+    rebuildTicketResponses(db)
+  }
+
+  if (
+    hasForeignKeyTarget(db, 'ticket_response_values', 'ticket_fields_old') ||
+    hasForeignKeyTarget(db, 'ticket_response_values', 'ticket_responses_old')
+  ) {
+    rebuildTicketResponseValues(db)
+  }
+
+  if (hasForeignKeyTarget(db, 'ticket_history', 'ticket_responses_old')) {
+    rebuildTicketHistory(db)
+  }
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_responses_response_template
+      ON ticket_responses(collection_response_id, ticket_template_id)
+  `)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_ticket_fields_template
+      ON ticket_fields(ticket_template_id, sort_order, id)
+  `)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_collection_ticket_templates_collection
+      ON collection_ticket_templates(collection_id, display_order, id)
+  `)
+
+  if (!hasRun('backfill-ticket-templates')) {
+    db.transaction(() => {
+      const legacyCollections = db.prepare(`
+        SELECT DISTINCT c.id, c.title, c.organization_id, c.created_by
+        FROM collections c
+        JOIN ticket_fields tf ON tf.collection_id = c.id
+        WHERE tf.ticket_template_id IS NULL
+        ORDER BY c.id ASC
+      `).all() as Array<{
+        id: number
+        title: string
+        organization_id: number | null
+        created_by: number | null
+      }>
+
+      for (const collection of legacyCollections) {
+        const created = db.prepare(`
+          INSERT INTO ticket_templates (organization_id, title, description, created_by)
+          VALUES (?, ?, ?, ?)
+        `).run(
+          collection.organization_id,
+          `${collection.title} Ticket`,
+          'Migrated from the legacy collection ticket designer.',
+          collection.created_by,
+        )
+
+        const templateId = Number(created.lastInsertRowid)
+
+        db.prepare(`
+          UPDATE ticket_fields
+          SET ticket_template_id = ?, collection_id = NULL
+          WHERE collection_id = ? AND ticket_template_id IS NULL
+        `).run(templateId, collection.id)
+
+        db.prepare(`
+          INSERT OR IGNORE INTO collection_ticket_templates (collection_id, ticket_template_id, display_order)
+          VALUES (?, ?, 0)
+        `).run(collection.id, templateId)
+
+        db.prepare(`
+          UPDATE ticket_responses
+          SET ticket_template_id = ?
+          WHERE collection_id = ? AND ticket_template_id IS NULL
+        `).run(templateId, collection.id)
+      }
+
+      const collectionsNeedingAssignments = db.prepare(`
+        SELECT DISTINCT c.id AS collection_id, tf.ticket_template_id AS ticket_template_id
+        FROM collections c
+        JOIN ticket_fields tf ON tf.ticket_template_id IS NOT NULL
+        LEFT JOIN collection_ticket_templates ctt
+          ON ctt.collection_id = c.id AND ctt.ticket_template_id = tf.ticket_template_id
+        WHERE ctt.id IS NULL
+        ORDER BY c.id ASC, tf.ticket_template_id ASC
+      `).all() as Array<{ collection_id: number; ticket_template_id: number }>
+
+      collectionsNeedingAssignments.forEach((row, index) => {
+        db.prepare(`
+          INSERT OR IGNORE INTO collection_ticket_templates (collection_id, ticket_template_id, display_order)
+          VALUES (?, ?, ?)
+        `).run(row.collection_id, row.ticket_template_id, index)
+      })
+    })()
+    markRan('backfill-ticket-templates')
   }
 
   if (!tableExists(db, 'notification_preferences')) {

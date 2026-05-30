@@ -12,6 +12,7 @@ import DashboardPage from './pages/DashboardPage'
 import SettingsPage from './pages/SettingsPage'
 import ReportsPage from './pages/ReportsPage'
 import AISummaryPage from './pages/AISummaryPage'
+import TicketDesignerPage from './pages/TicketDesignerPage'
 import NotificationsPage from './pages/NotificationsPage'
 import MySubmissionsPage from './pages/MySubmissionsPage'
 import MySubmissionDetailPage from './pages/MySubmissionDetailPage'
@@ -59,6 +60,7 @@ export default function App() {
             <Route path="/records" element={<RecordsPage />} />
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="ticket-designer" element={<TicketDesignerPage />} />
           </Route>
 
           <Route element={<RequireRole allowed={['super_admin', 'administrator']} fallback="/dashboard" />}>

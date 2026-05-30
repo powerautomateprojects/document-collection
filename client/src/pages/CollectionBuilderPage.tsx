@@ -24,9 +24,10 @@ import {
   publishCollectionVersion,
   updateCollection,
 } from '../api/collections'
-import { getTicketFields, saveTicketFields } from '../api/tickets'
+import { getCollectionTicketTemplates, saveCollectionTicketTemplates } from '../api/tickets'
+import { listTicketTemplates } from '../api/ticketTemplates'
 import { listCategories } from '../api/categories'
-import type { Category, Collection, CollectionField } from '../types'
+import type { Category, Collection, CollectionField, CollectionTicketTemplate, TicketTemplate } from '../types'
 import type {
   ColType,
   CollectionStatus,
@@ -34,7 +35,6 @@ import type {
   FieldDisplayStyle,
   FieldType,
   TableColumn,
-  TicketField,
 } from '../types'
 import TableWizardModal from '../components/collections/TableWizardModal'
 import MatrixLikertConfigModal from '../components/collections/MatrixLikertConfigModal'
@@ -119,30 +119,6 @@ function mapCollectionToBuilderFields(collection: Collection): BuilderField[] {
           : null,
     })),
     staffOnly: f.staffOnly ?? false,
-  }))
-}
-
-function mapTicketFieldsToBuilder(fields: TicketField[]): BuilderField[] {
-  return fields.map(f => ({
-    _key: uid(),
-    fieldKey: f.fieldKey ?? uid(),
-    type: normalizeFieldType(f.type),
-    label: f.label,
-    subtitle: f.subtitle ?? '',
-    page: f.page ?? 1,
-    required: f.required,
-    options: f.options ?? [],
-    displayStyle: resolveDisplayStyle(normalizeFieldType(f.type), f.displayStyle),
-    branchRules: [],
-    tableColumns: (f.tableColumns ?? []).map(tc => ({
-      ...tc,
-      colType: normalizeColType(tc.colType),
-      listOptions:
-        tc.colType === 'list'
-          ? (tc.listOptions ?? []).map(opt => String(opt).trim()).filter(Boolean)
-          : null,
-    })),
-    staffOnly: false,
   }))
 }
 
@@ -252,28 +228,19 @@ export default function CollectionBuilderPage() {
 
   // Ticket fields
   const [ticketFields, setTicketFields] = useState<BuilderField[]>([])
-  const [activeTicketPage, setActiveTicketPage] = useState(1)
   const [ticketWizardField, setTicketWizardField] = useState<string | null>(null)
   const [ticketMatrixConfigField, setTicketMatrixConfigField] = useState<string | null>(null)
   const [ticketSaving, setTicketSaving] = useState(false)
   const [ticketSaveError, setTicketSaveError] = useState<string | null>(null)
   const [ticketSaved, setTicketSaved] = useState(false)
+  const [availableTicketTemplates, setAvailableTicketTemplates] = useState<TicketTemplate[]>([])
+  const [assignedTicketTemplates, setAssignedTicketTemplates] = useState<CollectionTicketTemplate[]>([])
+  const [selectedTicketTemplateId, setSelectedTicketTemplateId] = useState('')
 
   // Used to skip autosave on initial load
   const loadedRef = useRef(false)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [loadTick, setLoadTick] = useState(0)
-
-  const ticketBuilderPages = useMemo(() => {
-    if (ticketFields.length === 0) return [1]
-    const pages = Array.from(new Set(ticketFields.map(f => Math.max(1, Math.floor(f.page || 1))))).sort((a, b) => a - b)
-    return pages.length > 0 ? pages : [1]
-  }, [ticketFields])
-
-  const visibleTicketFields = useMemo(
-    () => ticketFields.filter(f => Math.max(1, Math.floor(f.page || 1)) === activeTicketPage),
-    [activeTicketPage, ticketFields],
-  )
 
   const builderPages = useMemo(() => {
     const pages = Array.from(
@@ -334,13 +301,20 @@ export default function CollectionBuilderPage() {
       .catch(err => setLoadError((err as Error).message))
   }, [id, isEdit])
 
-  // Load ticket fields when editing
+  // Load assigned ticket templates when editing
   useEffect(() => {
     if (!id || !isEdit) return
-    getTicketFields(parseInt(id, 10))
-      .then(fields => setTicketFields(mapTicketFieldsToBuilder(fields)))
-      .catch(() => setTicketFields([]))
+    getCollectionTicketTemplates(parseInt(id, 10))
+      .then(setAssignedTicketTemplates)
+      .catch(() => setAssignedTicketTemplates([]))
   }, [id, isEdit])
+
+  useEffect(() => {
+    if (!isEdit) return
+    listTicketTemplates({ organizationOnly: true })
+      .then(setAvailableTicketTemplates)
+      .catch(() => setAvailableTicketTemplates([]))
+  }, [isEdit])
 
   useEffect(() => {
     if (isEdit || !templateId) return
@@ -803,91 +777,60 @@ export default function CollectionBuilderPage() {
     setTicketFields(prev => prev.map(f => f._key === key ? { ...f, ...patch } : f))
   }
 
-  function removeTicketField(key: string) {
-    setTicketFields(prev => prev.filter(f => f._key !== key))
-  }
-
-  function moveTicketField(key: string, dir: -1 | 1) {
-    setTicketFields(prev => {
-      const currentField = prev.find(f => f._key === key)
-      if (!currentField) return prev
-      const samePageItems = prev
-        .map((field, index) => ({ field, index }))
-        .filter(({ field }) => Math.max(1, Math.floor(field.page || 1)) === Math.max(1, Math.floor(currentField.page || 1)))
-      const pageIndex = samePageItems.findIndex(({ field }) => field._key === key)
-      const targetPageIndex = pageIndex + dir
-      if (pageIndex === -1 || targetPageIndex < 0 || targetPageIndex >= samePageItems.length) return prev
-      const next = [...prev]
-      const sourceIndex = samePageItems[pageIndex].index
-      const targetIndex = samePageItems[targetPageIndex].index
-      ;[next[sourceIndex], next[targetIndex]] = [next[targetIndex], next[sourceIndex]]
-      return next
-    })
-  }
-
-  function addTicketOption(key: string) {
-    setTicketFields(prev => prev.map(f => f._key === key ? { ...f, options: [...f.options, ''] } : f))
-  }
-
-  function updateTicketOption(key: string, idx: number, val: string) {
-    setTicketFields(prev => prev.map(f => f._key === key ? { ...f, options: f.options.map((o, i) => i === idx ? val : o) } : f))
-  }
-
-  function removeTicketOption(key: string, idx: number) {
-    setTicketFields(prev => prev.map(f => f._key === key ? { ...f, options: f.options.filter((_, i) => i !== idx) } : f))
-  }
-
-  function addTicketOtherOption(key: string) {
-    setTicketFields(prev => prev.map(f =>
-      f._key === key && !f.options.includes(OTHER_OPTION_MARKER)
-        ? { ...f, options: [...f.options, OTHER_OPTION_MARKER] }
-        : f
-    ))
-  }
-
-  function removeTicketOtherOption(key: string) {
-    setTicketFields(prev => prev.map(f =>
-      f._key === key ? { ...f, options: f.options.filter(o => o !== OTHER_OPTION_MARKER) } : f
-    ))
-  }
-
   async function handleSaveTicket() {
     if (!id) return
     setTicketSaving(true)
     setTicketSaveError(null)
     try {
-      const fieldsPayload = ticketFields
-        .filter(f => f.label.trim() !== '')
-        .map((f, i) => ({
-          fieldKey: f.fieldKey,
-          type: normalizeFieldType(f.type),
-          label: f.label.trim(),
-          subtitle: f.subtitle.trim() || undefined,
-          page: Math.max(1, Math.floor(f.page || 1)),
-          required: f.required,
-          options: f.options.filter(o => o.trim() !== ''),
-          displayStyle: resolveDisplayStyle(f.type, f.displayStyle),
-          branchRules: [],
-          tableColumns: f.tableColumns.map((c, ci) => ({
-            ...c,
-            colType: normalizeColType(c.colType),
-            listOptions:
-              normalizeColType(c.colType) === 'list'
-                ? (c.listOptions ?? []).map(opt => opt.trim()).filter(Boolean)
-                : null,
-            sortOrder: ci,
-          })),
-          sortOrder: i,
-          staffOnly: false,
-        }))
-      await saveTicketFields(parseInt(id, 10), fieldsPayload)
+      await saveCollectionTicketTemplates(
+        parseInt(id, 10),
+        assignedTicketTemplates.map(template => template.id),
+      )
       setTicketSaved(true)
       setTimeout(() => setTicketSaved(false), 2500)
+      showToast('Assigned tickets saved', 'success')
     } catch (err) {
       setTicketSaveError((err as Error).message)
     } finally {
       setTicketSaving(false)
     }
+  }
+
+  function addAssignedTicketTemplate() {
+    const templateId = Number(selectedTicketTemplateId)
+    if (!Number.isInteger(templateId) || templateId <= 0) return
+    if (assignedTicketTemplates.some(template => template.id === templateId)) return
+
+    const template = availableTicketTemplates.find(item => item.id === templateId)
+    if (!template) return
+
+    setAssignedTicketTemplates(prev => [
+      ...prev,
+      {
+        id: template.id,
+        title: template.title,
+        description: template.description,
+        displayOrder: prev.length,
+      },
+    ])
+    setSelectedTicketTemplateId('')
+  }
+
+  function removeAssignedTicketTemplate(templateId: number) {
+    setAssignedTicketTemplates(prev => prev
+      .filter(template => template.id !== templateId)
+      .map((template, index) => ({ ...template, displayOrder: index })))
+  }
+
+  function moveAssignedTicketTemplate(templateId: number, direction: -1 | 1) {
+    setAssignedTicketTemplates(prev => {
+      const index = prev.findIndex(template => template.id === templateId)
+      const targetIndex = index + direction
+      if (index === -1 || targetIndex < 0 || targetIndex >= prev.length) return prev
+      const next = [...prev]
+      ;[next[index], next[targetIndex]] = [next[targetIndex], next[index]]
+      return next.map((template, order) => ({ ...template, displayOrder: order }))
+    })
   }
 
   // ── Wizard field ──────────────────────────────────────────
@@ -1171,7 +1114,7 @@ export default function CollectionBuilderPage() {
                     : 'border-transparent text-[#64748B] hover:text-[#2563EB] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]',
                 ].join(' ')}
               >
-                Ticket Designer
+                Add Ticket
               </button>
             )}
             {isEdit && (
@@ -1204,7 +1147,7 @@ export default function CollectionBuilderPage() {
                           : 'text-[#1E293B] dark:text-[#F1F5F9] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]',
                       ].join(' ')}
                     >
-                      Ticket Designer
+                      Add Ticket
                     </button>
                   </div>
                 )}
@@ -1532,73 +1475,87 @@ export default function CollectionBuilderPage() {
           )}
         </div>
 
-        {/* Ticket Field Designer */}
+        {/* Ticket Assignment */}
         {detailsTab === 'ticket' && isEdit && (
           <div className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg p-5 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-[#64748B]">
-                Ticket Fields
+                Add Ticket
               </h2>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => setTicketFields(prev => [...prev, blankField(activeTicketPage)])}
-                  className="flex items-center gap-1 text-xs text-[#2563EB] hover:underline"
-                >
-                  <Plus size={13} />
-                  Add field
-                </button>
-              </div>
+              <span className="text-xs text-[#64748B]">Manage templates in Forms, then assign them here.</span>
             </div>
             <p className="text-xs text-[#64748B]">
-              Define the fields that staff will fill in when creating a ticket for a submission. Closed tickets can be re-opened.
+              Assign one or more reusable ticket templates to this collection. Each assigned ticket appears separately in Records for every submission.
             </p>
 
-            {ticketBuilderPages.length > 1 && (
-              <div className="flex flex-wrap gap-2">
-                {ticketBuilderPages.map(pageNumber => (
-                  <button
-                    key={pageNumber}
-                    type="button"
-                    onClick={() => setActiveTicketPage(pageNumber)}
-                    className={[
-                      'px-3 py-2 text-sm font-semibold border-b-2 transition-colors rounded-t',
-                      activeTicketPage === pageNumber
-                        ? 'border-[#2563EB] text-[#2563EB] bg-blue-50 dark:bg-blue-900/20'
-                        : 'border-transparent text-[#64748B] hover:text-[#2563EB] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]',
-                    ].join(' ')}
-                  >
-                    Page {pageNumber}
-                  </button>
-                ))}
-              </div>
-            )}
+            <div className="flex flex-col sm:flex-row gap-3">
+              <select
+                value={selectedTicketTemplateId}
+                onChange={e => setSelectedTicketTemplateId(e.target.value)}
+                className={`${INPUT} flex-1`}
+              >
+                <option value="">Select a ticket template</option>
+                {availableTicketTemplates
+                  .filter(template => !assignedTicketTemplates.some(assigned => assigned.id === template.id))
+                  .map(template => (
+                    <option key={template.id} value={template.id}>{template.title}</option>
+                  ))}
+              </select>
+              <button
+                type="button"
+                onClick={addAssignedTicketTemplate}
+                disabled={!selectedTicketTemplateId}
+                className="inline-flex items-center justify-center gap-2 rounded border border-[#2563EB] px-4 py-2 text-sm font-semibold text-[#2563EB] hover:bg-blue-50 disabled:opacity-50"
+              >
+                <Plus size={14} />
+                Add Ticket
+              </button>
+            </div>
 
             <div className="space-y-3">
-              {visibleTicketFields.length === 0 ? (
+              {assignedTicketTemplates.length === 0 ? (
                 <div className="text-center py-10 text-[#94A3B8] text-sm">
-                  No ticket fields yet. Add a field to get started.
+                  No ticket templates assigned yet.
                 </div>
               ) : (
-                visibleTicketFields.map((field, idx) => (
-                  <FieldCard
-                    key={field._key}
-                    field={field}
-                    index={idx}
-                    total={visibleTicketFields.length}
-                    onUpdate={patch => updateTicketField(field._key, patch)}
-                    onRemove={() => removeTicketField(field._key)}
-                    onMoveUp={() => moveTicketField(field._key, -1)}
-                    onMoveDown={() => moveTicketField(field._key, 1)}
-                    onAddOption={() => addTicketOption(field._key)}
-                    onAddOtherOption={() => addTicketOtherOption(field._key)}
-                    onRemoveOtherOption={() => removeTicketOtherOption(field._key)}
-                    onUpdateOption={(i, v) => updateTicketOption(field._key, i, v)}
-                    onRemoveOption={i => removeTicketOption(field._key, i)}
-                    onConfigureTable={() => setTicketWizardField(field._key)}
-                    onConfigureMatrix={() => setTicketMatrixConfigField(field._key)}
-                    hideStaffOnly
-                  />
+                assignedTicketTemplates.map((template, index) => (
+                  <div
+                    key={template.id}
+                    className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-[#FAFAFA] dark:bg-[#0F172A] p-4 flex items-start justify-between gap-4"
+                  >
+                    <div>
+                      <div className="text-sm font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{template.title}</div>
+                      <div className="mt-1 text-xs text-[#64748B]">{template.description || 'No description'}</div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => moveAssignedTicketTemplate(template.id, -1)}
+                        disabled={index === 0}
+                        className="text-[#94A3B8] hover:text-[#64748B] disabled:opacity-30 transition-colors"
+                        aria-label="Move ticket up"
+                      >
+                        <ChevronUp size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => moveAssignedTicketTemplate(template.id, 1)}
+                        disabled={index === assignedTicketTemplates.length - 1}
+                        className="text-[#94A3B8] hover:text-[#64748B] disabled:opacity-30 transition-colors"
+                        aria-label="Move ticket down"
+                      >
+                        <ChevronDown size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeAssignedTicketTemplate(template.id)}
+                        className="text-[#94A3B8] hover:text-red-500 transition-colors"
+                        aria-label="Remove ticket assignment"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
                 ))
               )}
             </div>
@@ -1616,7 +1573,7 @@ export default function CollectionBuilderPage() {
                 disabled={ticketSaving}
                 className="inline-flex items-center gap-2 rounded bg-[#2563EB] px-4 py-2 text-sm font-semibold text-white hover:bg-[#1D4ED8] disabled:opacity-50"
               >
-                {ticketSaving ? 'Saving…' : ticketSaved ? 'Saved!' : 'Save Ticket'}
+                {ticketSaving ? 'Saving…' : ticketSaved ? 'Saved!' : 'Save Assigned Tickets'}
               </button>
             </div>
           </div>

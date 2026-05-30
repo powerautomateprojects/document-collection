@@ -2308,6 +2308,527 @@ function insertTicketHistoryEntry(
   )
 }
 
+interface DbAssignedTicketTemplate {
+  id: number
+  ticket_template_id: number
+  title: string
+  description: string | null
+  display_order: number
+  is_active: number
+}
+
+function canManageCollectionTickets(context: RequestUserContext): boolean {
+  return isAdministrator(context) || context.role === 'administrator' || context.role === 'team_manager'
+}
+
+function fetchAssignedTicketTemplates(
+  db: ReturnType<typeof getDb>,
+  collectionId: number,
+): DbAssignedTicketTemplate[] {
+  return db.prepare(`
+    SELECT
+      ctt.id,
+      ctt.ticket_template_id,
+      tt.title,
+      tt.description,
+      ctt.display_order,
+      ctt.is_active
+    FROM collection_ticket_templates ctt
+    JOIN ticket_templates tt ON tt.id = ctt.ticket_template_id
+    WHERE ctt.collection_id = ? AND ctt.is_active = 1 AND tt.is_active = 1
+    ORDER BY ctt.display_order ASC, ctt.id ASC
+  `).all(collectionId) as DbAssignedTicketTemplate[]
+}
+
+function fetchAccessibleTicketTemplateForCollection(
+  db: ReturnType<typeof getDb>,
+  collectionId: number,
+  templateId: number,
+): DbAssignedTicketTemplate | undefined {
+  return db.prepare(`
+    SELECT
+      ctt.id,
+      ctt.ticket_template_id,
+      tt.title,
+      tt.description,
+      ctt.display_order,
+      ctt.is_active
+    FROM collection_ticket_templates ctt
+    JOIN ticket_templates tt ON tt.id = ctt.ticket_template_id
+    WHERE ctt.collection_id = ?
+      AND ctt.ticket_template_id = ?
+      AND ctt.is_active = 1
+      AND tt.is_active = 1
+    LIMIT 1
+  `).get(collectionId, templateId) as DbAssignedTicketTemplate | undefined
+}
+
+function serializeTicketResponse(
+  ticket: {
+    id: number
+    collection_response_id: number
+    collection_id: number
+    ticket_template_id: number | null
+    filled_by: number | null
+    filled_at: string | null
+    finalized: number
+    finalized_at: string | null
+    finalized_by_name: string | null
+  },
+  values: Array<{ ticket_field_id: number; value: string | null }>,
+) {
+  return {
+    id: ticket.id,
+    collectionResponseId: ticket.collection_response_id,
+    collectionId: ticket.collection_id,
+    ticketTemplateId: ticket.ticket_template_id,
+    filledBy: ticket.filled_by,
+    filledAt: ticket.filled_at,
+    finalized: ticket.finalized === 1,
+    finalizedAt: ticket.finalized_at,
+    finalizedByName: ticket.finalized_by_name,
+    values: values.map(v => ({ fieldId: v.ticket_field_id, value: v.value })),
+  }
+}
+
+// GET /:id/ticket-templates — list ticket templates assigned to a collection
+router.get('/:id/ticket-templates', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const id = parseInt(req.params.id, 10)
+  if (!context || isNaN(id)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canViewResponses(context)) { res.status(403).json({ error: 'Access denied' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(id, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const templates = fetchAssignedTicketTemplates(db, id)
+    res.json(templates.map(template => ({
+      id: template.ticket_template_id,
+      title: template.title,
+      description: template.description,
+      displayOrder: template.display_order,
+    })))
+  } catch (err) {
+    console.error('[collections] get ticket templates:', err)
+    res.status(500).json({ error: 'Failed to get ticket templates' })
+  }
+})
+
+// PUT /:id/ticket-templates — replace assigned ticket templates for a collection
+router.put('/:id/ticket-templates', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const id = parseInt(req.params.id, 10)
+  if (!context || isNaN(id)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canManageCollectionTickets(context)) { res.status(403).json({ error: 'Manager access required' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(id, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const body = req.body as { templateIds?: number[] }
+    const templateIds = Array.isArray(body.templateIds)
+      ? body.templateIds.map(value => Number(value)).filter(value => Number.isInteger(value) && value > 0)
+      : []
+
+    if (templateIds.length > 0) {
+      const placeholders = templateIds.map(() => '?').join(',')
+      const accessibleCount = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM ticket_templates
+        WHERE id IN (${placeholders})
+          AND is_active = 1
+          AND (${isAdministrator(context) ? '1 = 1' : 'organization_id = ?'})
+      `).get(...templateIds, ...(isAdministrator(context) ? [] : [context.organizationId])) as { count: number }
+
+      if (accessibleCount.count !== templateIds.length) {
+        res.status(400).json({ error: 'One or more ticket templates are unavailable for this collection' })
+        return
+      }
+    }
+
+    db.transaction(() => {
+      db.prepare('DELETE FROM collection_ticket_templates WHERE collection_id = ?').run(id)
+      templateIds.forEach((templateId, index) => {
+        db.prepare(`
+          INSERT INTO collection_ticket_templates (collection_id, ticket_template_id, display_order)
+          VALUES (?, ?, ?)
+        `).run(id, templateId, index)
+      })
+    })()
+
+    const templates = fetchAssignedTicketTemplates(db, id)
+    res.json(templates.map(template => ({
+      id: template.ticket_template_id,
+      title: template.title,
+      description: template.description,
+      displayOrder: template.display_order,
+    })))
+  } catch (err) {
+    console.error('[collections] save ticket templates:', err)
+    res.status(500).json({ error: 'Failed to save ticket templates' })
+  }
+})
+
+// GET /:id/responses/:responseId/tickets — list assigned tickets for a response
+router.get('/:id/responses/:responseId/tickets', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const collectionId = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  if (!context || isNaN(collectionId) || isNaN(responseId)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canViewResponses(context)) { res.status(403).json({ error: 'Access denied' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(collectionId, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const responseRow = db.prepare('SELECT id FROM collection_responses WHERE id = ? AND collection_id = ?').get(responseId, collectionId) as { id: number } | undefined
+    if (!responseRow) { res.status(404).json({ error: 'Response not found' }); return }
+
+    const templates = fetchAssignedTicketTemplates(db, collectionId)
+    const tickets = db.prepare(`
+      SELECT tr.*, u.name AS finalized_by_name
+      FROM ticket_responses tr
+      LEFT JOIN users u ON u.id = tr.finalized_by
+      WHERE tr.collection_id = ? AND tr.collection_response_id = ?
+    `).all(collectionId, responseId) as Array<{
+      id: number
+      collection_response_id: number
+      collection_id: number
+      ticket_template_id: number | null
+      filled_by: number | null
+      filled_at: string | null
+      finalized: number
+      finalized_at: string | null
+      finalized_by_name: string | null
+    }>
+
+    const ticketByTemplateId = new Map(tickets.map(ticket => [ticket.ticket_template_id ?? 0, ticket]))
+
+    res.json(templates.map(template => {
+      const ticket = ticketByTemplateId.get(template.ticket_template_id) ?? null
+      return {
+        templateId: template.ticket_template_id,
+        title: template.title,
+        description: template.description,
+        displayOrder: template.display_order,
+        response: ticket
+          ? serializeTicketResponse(ticket, [])
+          : null,
+      }
+    }))
+  } catch (err) {
+    console.error('[collections] list response tickets:', err)
+    res.status(500).json({ error: 'Failed to list tickets' })
+  }
+})
+
+// GET /:id/responses/:responseId/tickets/:templateId — get ticket instance (or null)
+router.get('/:id/responses/:responseId/tickets/:templateId', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const collectionId = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  const templateId = parseInt(req.params.templateId, 10)
+  if (!context || isNaN(collectionId) || isNaN(responseId) || isNaN(templateId)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canViewResponses(context)) { res.status(403).json({ error: 'Access denied' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(collectionId, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+    const template = fetchAccessibleTicketTemplateForCollection(db, collectionId, templateId)
+    if (!template) { res.status(404).json({ error: 'Ticket template not assigned to this collection' }); return }
+
+    const ticket = db.prepare(`
+      SELECT tr.*, u.name AS finalized_by_name
+      FROM ticket_responses tr
+      LEFT JOIN users u ON u.id = tr.finalized_by
+      WHERE tr.collection_response_id = ? AND tr.collection_id = ? AND tr.ticket_template_id = ?
+      LIMIT 1
+    `).get(responseId, collectionId, templateId) as {
+      id: number
+      collection_response_id: number
+      collection_id: number
+      ticket_template_id: number | null
+      filled_by: number | null
+      filled_at: string | null
+      finalized: number
+      finalized_at: string | null
+      finalized_by_name: string | null
+    } | undefined
+
+    if (!ticket) { res.json(null); return }
+
+    const values = db.prepare('SELECT ticket_field_id, value FROM ticket_response_values WHERE ticket_response_id = ?').all(ticket.id) as Array<{ ticket_field_id: number; value: string | null }>
+    res.json(serializeTicketResponse(ticket, values))
+  } catch (err) {
+    console.error('[collections] get template ticket:', err)
+    res.status(500).json({ error: 'Failed to get ticket' })
+  }
+})
+
+// POST /:id/responses/:responseId/tickets/:templateId — create or update ticket draft
+router.post('/:id/responses/:responseId/tickets/:templateId', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const collectionId = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  const templateId = parseInt(req.params.templateId, 10)
+  if (!context || isNaN(collectionId) || isNaN(responseId) || isNaN(templateId)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canViewResponses(context)) { res.status(403).json({ error: 'Staff access required' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(collectionId, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+    const template = fetchAccessibleTicketTemplateForCollection(db, collectionId, templateId)
+    if (!template) { res.status(404).json({ error: 'Ticket template not assigned to this collection' }); return }
+
+    const responseRow = db.prepare('SELECT id FROM collection_responses WHERE id = ? AND collection_id = ?').get(responseId, collectionId) as { id: number } | undefined
+    if (!responseRow) { res.status(404).json({ error: 'Response not found' }); return }
+
+    const existing = db.prepare(`
+      SELECT id, finalized
+      FROM ticket_responses
+      WHERE collection_response_id = ? AND collection_id = ? AND ticket_template_id = ?
+      LIMIT 1
+    `).get(responseId, collectionId, templateId) as { id: number; finalized: number } | undefined
+
+    const body = req.body as { values?: Array<{ fieldId: number; value: string }> }
+    const values = Array.isArray(body.values) ? body.values : []
+    const existingValues = existing
+      ? db.prepare('SELECT ticket_field_id, value FROM ticket_response_values WHERE ticket_response_id = ?').all(existing.id) as Array<{ ticket_field_id: number; value: string | null }>
+      : []
+    const previousValueByFieldId = new Map(existingValues.map(value => [value.ticket_field_id, value.value]))
+    const fieldRows = db.prepare(`
+      SELECT id, field_key, label, type
+      FROM ticket_fields
+      WHERE ticket_template_id = ?
+    `).all(templateId) as Array<{ id: number; field_key: string | null; label: string; type: string }>
+    const fieldMetaById = new Map(fieldRows.map(field => [field.id, field]))
+    const actorName = resolveTicketActorName(db, context.id)
+
+    let ticketId: number
+    if (!existing) {
+      const inserted = db.prepare(`
+        INSERT INTO ticket_responses (collection_response_id, collection_id, ticket_template_id, filled_by, filled_at, updated_at)
+        VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+      `).run(responseId, collectionId, templateId, context.id)
+      ticketId = Number(inserted.lastInsertRowid)
+    } else {
+      ticketId = existing.id
+      db.prepare(`
+        UPDATE ticket_responses
+        SET filled_by = ?, filled_at = datetime('now'), updated_at = datetime('now')
+        WHERE id = ?
+      `).run(context.id, ticketId)
+    }
+
+    const upsert = db.prepare(`
+      INSERT INTO ticket_response_values (ticket_response_id, ticket_field_id, value)
+      VALUES (?, ?, ?)
+      ON CONFLICT(ticket_response_id, ticket_field_id) DO UPDATE SET value = excluded.value
+    `)
+
+    for (const valueRow of values) {
+      if (!fieldMetaById.has(valueRow.fieldId)) continue
+      upsert.run(ticketId, valueRow.fieldId, valueRow.value)
+
+      const oldValue = normalizeTicketAuditValue(previousValueByFieldId.get(valueRow.fieldId))
+      const newValue = normalizeTicketAuditValue(valueRow.value)
+      if (oldValue === newValue) continue
+
+      const fieldMeta = fieldMetaById.get(valueRow.fieldId)
+      insertTicketHistoryEntry(db, {
+        ticketResponseId: ticketId,
+        ticketFieldId: valueRow.fieldId,
+        ticketFieldKey: fieldMeta?.field_key ?? null,
+        fieldLabelSnapshot: fieldMeta?.label ?? `Field #${valueRow.fieldId}`,
+        fieldTypeSnapshot: fieldMeta?.type ?? null,
+        eventType: 'field_changed',
+        oldValue,
+        newValue,
+        changedBy: context.id,
+        changedByName: actorName,
+      })
+    }
+
+    const savedValues = db.prepare('SELECT ticket_field_id, value FROM ticket_response_values WHERE ticket_response_id = ?').all(ticketId) as Array<{ ticket_field_id: number; value: string | null }>
+    const savedTicket = db.prepare(`
+      SELECT tr.*, u.name AS finalized_by_name
+      FROM ticket_responses tr
+      LEFT JOIN users u ON u.id = tr.finalized_by
+      WHERE tr.id = ?
+    `).get(ticketId) as {
+      id: number
+      collection_response_id: number
+      collection_id: number
+      ticket_template_id: number | null
+      filled_by: number | null
+      filled_at: string | null
+      finalized: number
+      finalized_at: string | null
+      finalized_by_name: string | null
+    }
+
+    res.json(serializeTicketResponse(savedTicket, savedValues))
+  } catch (err) {
+    console.error('[collections] save template ticket:', err)
+    res.status(500).json({ error: 'Failed to save ticket' })
+  }
+})
+
+// POST /:id/responses/:responseId/tickets/:templateId/finalize — toggle ticket closed/open
+router.post('/:id/responses/:responseId/tickets/:templateId/finalize', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const collectionId = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  const templateId = parseInt(req.params.templateId, 10)
+  if (!context || isNaN(collectionId) || isNaN(responseId) || isNaN(templateId)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canViewResponses(context)) { res.status(403).json({ error: 'Staff access required' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(collectionId, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+    const template = fetchAccessibleTicketTemplateForCollection(db, collectionId, templateId)
+    if (!template) { res.status(404).json({ error: 'Ticket template not assigned to this collection' }); return }
+
+    const ticket = db.prepare(`
+      SELECT id, finalized
+      FROM ticket_responses
+      WHERE collection_response_id = ? AND collection_id = ? AND ticket_template_id = ?
+      LIMIT 1
+    `).get(responseId, collectionId, templateId) as { id: number; finalized: number } | undefined
+    if (!ticket) { res.status(404).json({ error: 'Ticket not found. Save a draft first.' }); return }
+
+    const nowClosed = ticket.finalized !== 1
+    const actorName = resolveTicketActorName(db, context.id)
+    if (nowClosed) {
+      db.prepare(`
+        UPDATE ticket_responses
+        SET finalized = 1, finalized_at = datetime('now'), finalized_by = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).run(context.id, ticket.id)
+    } else {
+      db.prepare(`
+        UPDATE ticket_responses
+        SET finalized = 0, finalized_at = NULL, finalized_by = NULL, updated_at = datetime('now')
+        WHERE id = ?
+      `).run(ticket.id)
+    }
+
+    insertTicketHistoryEntry(db, {
+      ticketResponseId: ticket.id,
+      eventType: nowClosed ? 'ticket_closed' : 'ticket_reopened',
+      oldValue: nowClosed ? 'open' : 'closed',
+      newValue: nowClosed ? 'closed' : 'open',
+      changedBy: context.id,
+      changedByName: actorName,
+      fieldLabelSnapshot: 'Ticket status',
+    })
+
+    const updatedTicket = db.prepare(`
+      SELECT tr.*, u.name AS finalized_by_name
+      FROM ticket_responses tr
+      LEFT JOIN users u ON u.id = tr.finalized_by
+      WHERE tr.id = ?
+    `).get(ticket.id) as {
+      id: number
+      collection_response_id: number
+      collection_id: number
+      ticket_template_id: number | null
+      filled_by: number | null
+      filled_at: string | null
+      finalized: number
+      finalized_at: string | null
+      finalized_by_name: string | null
+    }
+    const values = db.prepare('SELECT ticket_field_id, value FROM ticket_response_values WHERE ticket_response_id = ?').all(ticket.id) as Array<{ ticket_field_id: number; value: string | null }>
+
+    res.json(serializeTicketResponse(updatedTicket, values))
+  } catch (err) {
+    console.error('[collections] toggle template ticket closed:', err)
+    res.status(500).json({ error: 'Failed to update ticket' })
+  }
+})
+
+// GET /:id/responses/:responseId/tickets/:templateId/history — list ticket history entries
+router.get('/:id/responses/:responseId/tickets/:templateId/history', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const collectionId = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  const templateId = parseInt(req.params.templateId, 10)
+  if (!context || isNaN(collectionId) || isNaN(responseId) || isNaN(templateId)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canViewResponses(context)) { res.status(403).json({ error: 'Access denied' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(collectionId, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+    const template = fetchAccessibleTicketTemplateForCollection(db, collectionId, templateId)
+    if (!template) { res.status(404).json({ error: 'Ticket template not assigned to this collection' }); return }
+
+    const ticket = db.prepare(`
+      SELECT id
+      FROM ticket_responses
+      WHERE collection_response_id = ? AND collection_id = ? AND ticket_template_id = ?
+      LIMIT 1
+    `).get(responseId, collectionId, templateId) as { id: number } | undefined
+
+    if (!ticket) { res.json([]); return }
+
+    const rows = db.prepare(`
+      SELECT
+        id,
+        ticket_field_id,
+        ticket_field_key,
+        field_label_snapshot,
+        field_type_snapshot,
+        event_type,
+        old_value,
+        new_value,
+        changed_by,
+        changed_by_name,
+        changed_at
+      FROM ticket_history
+      WHERE ticket_response_id = ?
+      ORDER BY datetime(changed_at) DESC, id DESC
+    `).all(ticket.id) as Array<{
+      id: number
+      ticket_field_id: number | null
+      ticket_field_key: string | null
+      field_label_snapshot: string | null
+      field_type_snapshot: string | null
+      event_type: TicketHistoryEventType
+      old_value: string | null
+      new_value: string | null
+      changed_by: number | null
+      changed_by_name: string | null
+      changed_at: string
+    }>
+
+    res.json(rows.map(row => ({
+      id: row.id,
+      fieldId: row.ticket_field_id,
+      fieldKey: row.ticket_field_key,
+      fieldLabel: row.field_label_snapshot,
+      fieldType: row.field_type_snapshot,
+      eventType: row.event_type,
+      oldValue: row.old_value,
+      newValue: row.new_value,
+      changedBy: row.changed_by,
+      changedByName: row.changed_by_name,
+      changedAt: row.changed_at,
+    })))
+  } catch (err) {
+    console.error('[collections] get template ticket history:', err)
+    res.status(500).json({ error: 'Failed to get ticket history' })
+  }
+})
+
 // GET /:id/ticket — return ticket field definitions for a collection
 router.get('/:id/ticket', authenticateToken, (req: Request, res: Response): void => {
   const context = loadRequestUserContext(req)
@@ -2320,9 +2841,12 @@ router.get('/:id/ticket', authenticateToken, (req: Request, res: Response): void
     const collection = fetchAccessibleCollectionById(id, context)
     if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
 
+    const assignedTemplate = fetchAssignedTicketTemplates(db, id)[0]
+    if (!assignedTemplate) { res.json([]); return }
+
     const fields = db
-      .prepare('SELECT * FROM ticket_fields WHERE collection_id = ? ORDER BY page_number ASC, sort_order ASC, id ASC')
-      .all(id) as Array<{ id: number; collection_id: number; field_key: string | null; type: string; label: string; subtitle: string | null; page_number: number; required: number; options: string | null; display_style: string; sort_order: number }>
+      .prepare('SELECT * FROM ticket_fields WHERE ticket_template_id = ? ORDER BY page_number ASC, sort_order ASC, id ASC')
+      .all(assignedTemplate.ticket_template_id) as Array<{ id: number; collection_id: number | null; ticket_template_id: number | null; field_key: string | null; type: string; label: string; subtitle: string | null; page_number: number; required: number; options: string | null; display_style: string; sort_order: number }>
 
     const fieldIds = fields.map(f => f.id)
     const cols: Array<{ id: number; ticket_field_id: number; name: string; col_type: string; list_options: string | null; sort_order: number }> =
@@ -2378,11 +2902,14 @@ router.put('/:id/ticket', authenticateToken, (req: Request, res: Response): void
     const collection = fetchAccessibleCollectionById(id, context)
     if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
 
+    const assignedTemplate = fetchAssignedTicketTemplates(db, id)[0]
+    if (!assignedTemplate) { res.status(400).json({ error: 'Assign a ticket template before editing ticket fields' }); return }
+
     const body = req.body as { fields?: FieldInput[] }
     const fields = Array.isArray(body.fields) ? body.fields : []
     const existingFields = db
-      .prepare('SELECT id, field_key FROM ticket_fields WHERE collection_id = ?')
-      .all(id) as Array<{ id: number; field_key: string | null }>
+      .prepare('SELECT id, field_key FROM ticket_fields WHERE ticket_template_id = ?')
+      .all(assignedTemplate.ticket_template_id) as Array<{ id: number; field_key: string | null }>
     const oldFieldIds = existingFields.map(field => field.id)
     const existingFieldKeyById = new Map(
       existingFields.map(field => [field.id, field.field_key?.trim() || `tf-${field.id}`])
@@ -2393,17 +2920,18 @@ router.put('/:id/ticket', authenticateToken, (req: Request, res: Response): void
     try { db.exec('PRAGMA foreign_keys = OFF') } catch { /* Turso */ }
 
     // Delete existing ticket fields (cascade removes ticket_table_columns)
-    db.prepare('DELETE FROM ticket_fields WHERE collection_id = ?').run(id)
+    db.prepare('DELETE FROM ticket_fields WHERE ticket_template_id = ?').run(assignedTemplate.ticket_template_id)
 
     const newFieldIdByKey = new Map<string, number>()
 
     fields.forEach((field, idx) => {
       const normalizedFieldKey = field.fieldKey?.trim() || crypto.randomUUID()
       const r = db.prepare(
-        `INSERT INTO ticket_fields (collection_id, field_key, type, label, subtitle, page_number, required, options, display_style, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO ticket_fields (collection_id, ticket_template_id, field_key, type, label, subtitle, page_number, required, options, display_style, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
-        id,
+        null,
+        assignedTemplate.ticket_template_id,
         normalizedFieldKey,
         field.type,
         field.label,
@@ -2749,6 +3277,8 @@ router.get('/:id/tickets', authenticateToken, (req: Request, res: Response): voi
     type TicketListRow = {
       id: number
       collection_response_id: number
+      ticket_template_id: number | null
+      ticket_template_title: string | null
       filled_by: number | null
       filled_at: string | null
       finalized: number
@@ -2763,6 +3293,8 @@ router.get('/:id/tickets', authenticateToken, (req: Request, res: Response): voi
       SELECT
         tr.id,
         tr.collection_response_id,
+        tr.ticket_template_id,
+        tt.title         AS ticket_template_title,
         tr.filled_by,
         tr.filled_at,
         tr.finalized,
@@ -2772,6 +3304,7 @@ router.get('/:id/tickets', authenticateToken, (req: Request, res: Response): voi
         cr.respondent_email AS submitter_email,
         cr.submitted_at
       FROM ticket_responses tr
+      LEFT JOIN ticket_templates tt ON tt.id = tr.ticket_template_id
       LEFT JOIN users fu ON fu.id = tr.finalized_by
       LEFT JOIN collection_responses cr ON cr.id = tr.collection_response_id
       WHERE tr.collection_id = ?
@@ -2799,6 +3332,8 @@ router.get('/:id/tickets', authenticateToken, (req: Request, res: Response): voi
     res.json(rows.map(r => ({
       id: r.id,
       collectionResponseId: r.collection_response_id,
+      ticketTemplateId: r.ticket_template_id,
+      ticketTitle: r.ticket_template_title,
       finalized: r.finalized === 1,
       finalizedAt: r.finalized_at,
       finalizedByName: r.finalized_by_name,

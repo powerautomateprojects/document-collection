@@ -149,10 +149,32 @@ export interface TicketField {
   tableColumns: TableColumn[] | null
 }
 
+export interface TicketTemplate {
+  id: number
+  organizationId: number | null
+  organizationName: string | null
+  title: string
+  description: string | null
+  createdBy: number | null
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
+  fieldCount: number
+  assignmentCount: number
+}
+
+export interface CollectionTicketTemplate {
+  id: number
+  title: string
+  description: string | null
+  displayOrder: number
+}
+
 export interface TicketResponse {
   id: number
   collectionResponseId: number
   collectionId: number
+  ticketTemplateId: number | null
   filledBy: number | null
   filledAt: string | null
   finalized: boolean
@@ -178,6 +200,8 @@ export interface TicketHistoryEntry {
 export interface CollectionTicketRow {
   id: number
   collectionResponseId: number
+  ticketTemplateId: number | null
+  ticketTitle: string | null
   finalized: boolean
   finalizedAt: string | null
   finalizedByName: string | null
@@ -185,6 +209,14 @@ export interface CollectionTicketRow {
   submitterEmail: string | null
   submittedAt: string | null
   values: { fieldId: number; value: string | null }[]
+}
+
+export interface ResponseTicketSummary {
+  templateId: number
+  title: string
+  description: string | null
+  displayOrder: number
+  response: TicketResponse | null
 }
 
 export interface Category {
