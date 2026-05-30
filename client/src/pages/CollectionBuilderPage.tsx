@@ -13,6 +13,7 @@ import {
   Copy,
   Upload,
   Lock,
+  MoreHorizontal,
 } from 'lucide-react'
 import {
   createCollection,
@@ -239,6 +240,7 @@ export default function CollectionBuilderPage() {
   const [currentVersionNumber, setCurrentVersionNumber] = useState<number | null>(null)
   const [versions, setVersions] = useState<CollectionVersion[]>([])
   const [detailsTab, setDetailsTab] = useState<'general' | 'photo' | 'share' | 'versions' | 'ticket'>('general')
+  const [detailsOverflowOpen, setDetailsOverflowOpen] = useState(false)
   const [versionCompareFromId, setVersionCompareFromId] = useState<number | null>(null)
   const [versionCompareToId, setVersionCompareToId] = useState<number | null>(null)
   const [versionSnapshots, setVersionSnapshots] = useState<Record<number, Collection>>({})
@@ -386,6 +388,10 @@ export default function CollectionBuilderPage() {
       return versions[0].id
     })
   }, [versions])
+
+  useEffect(() => {
+    setDetailsOverflowOpen(false)
+  }, [detailsTab])
 
   useEffect(() => {
     if (!id || detailsTab !== 'versions') return
@@ -1041,7 +1047,8 @@ export default function CollectionBuilderPage() {
                 className="flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-1.5 rounded hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors disabled:opacity-40"
               >
                 <Eye size={14} />
-                Test Form
+                <span className="sm:hidden">Test</span>
+                <span className="hidden sm:inline">Test Form</span>
               </button>
             )}
             {isEdit && (
@@ -1051,7 +1058,8 @@ export default function CollectionBuilderPage() {
                 className="flex items-center gap-1.5 text-sm text-[#64748B] border border-[#E2E8F0] dark:border-[#334155] px-3 py-1.5 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#1E293B] transition-colors disabled:opacity-40"
               >
                 <Copy size={14} />
-                New Version
+                <span className="sm:hidden">Version</span>
+                <span className="hidden sm:inline">New Version</span>
               </button>
             )}
             <button
@@ -1064,19 +1072,28 @@ export default function CollectionBuilderPage() {
                   : 'border-[#16A34A] text-white bg-[#16A34A] hover:bg-[#15803D]',
               ].join(' ')}
             >
-              {saving
-                ? 'Working...'
-                : status === 'published'
-                ? 'Move to Draft'
-                : 'Publish'}
+              <span className="sm:hidden">
+                {saving
+                  ? '...'
+                  : status === 'published'
+                  ? 'Draft'
+                  : 'Publish'}
+              </span>
+              <span className="hidden sm:inline">
+                {saving
+                  ? 'Working...'
+                  : status === 'published'
+                  ? 'Move to Draft'
+                  : 'Publish'}
+              </span>
             </button>
             <button
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-1.5 rounded transition-colors"
+              className="inline-flex items-center justify-center h-[34px] sm:h-auto gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-3 sm:px-4 py-1.5 rounded transition-colors"
             >
               <Save size={14} />
-              {saving ? 'Saving…' : 'Save'}
+              <span className="hidden sm:inline">{saving ? 'Saving…' : 'Save'}</span>
             </button>
           </div>
         </div>
@@ -1092,7 +1109,7 @@ export default function CollectionBuilderPage() {
           <h2 className="text-xs font-semibold uppercase tracking-wide text-[#64748B]">
             Collection Details
           </h2>
-          <div className="flex items-center gap-2 border-b border-[#E2E8F0] dark:border-[#334155] pb-3">
+          <div className="relative flex items-center gap-2 border-b border-[#E2E8F0] dark:border-[#334155] pb-3">
             <button
               type="button"
               onClick={() => setDetailsTab('general')}
@@ -1148,7 +1165,7 @@ export default function CollectionBuilderPage() {
                 type="button"
                 onClick={() => setDetailsTab('ticket')}
                 className={[
-                  'px-3 py-2 text-sm font-semibold border-b-2 transition-colors rounded-t',
+                  'hidden sm:inline-flex px-3 py-2 text-sm font-semibold border-b-2 transition-colors rounded-t',
                   detailsTab === 'ticket'
                     ? 'border-[#2563EB] text-[#2563EB] bg-blue-50 dark:bg-blue-900/20'
                     : 'border-transparent text-[#64748B] hover:text-[#2563EB] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]',
@@ -1156,6 +1173,42 @@ export default function CollectionBuilderPage() {
               >
                 Ticket
               </button>
+            )}
+            {isEdit && (
+              <div className="relative sm:hidden ml-auto">
+                <button
+                  type="button"
+                  onClick={() => setDetailsOverflowOpen(open => !open)}
+                  className={[
+                    'inline-flex items-center justify-center w-10 h-10 text-sm font-semibold border-b-2 transition-colors rounded-t',
+                    detailsTab === 'ticket' || detailsOverflowOpen
+                      ? 'border-[#2563EB] text-[#2563EB] bg-blue-50 dark:bg-blue-900/20'
+                      : 'border-transparent text-[#64748B] hover:text-[#2563EB] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]',
+                  ].join(' ')}
+                  aria-label="More collection detail tabs"
+                >
+                  <MoreHorizontal size={16} />
+                </button>
+                {detailsOverflowOpen && (
+                  <div className="absolute right-0 top-full mt-2 min-w-[140px] rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#1E293B] shadow-lg py-1 z-20">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDetailsTab('ticket')
+                        setDetailsOverflowOpen(false)
+                      }}
+                      className={[
+                        'w-full text-left px-3 py-2 text-sm transition-colors',
+                        detailsTab === 'ticket'
+                          ? 'text-[#2563EB] bg-blue-50 dark:bg-blue-900/20'
+                          : 'text-[#1E293B] dark:text-[#F1F5F9] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]',
+                      ].join(' ')}
+                    >
+                      Ticket
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
 

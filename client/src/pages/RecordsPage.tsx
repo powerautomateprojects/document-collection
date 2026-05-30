@@ -2270,7 +2270,7 @@ export default function RecordsPage() {
                               {entry.changedByName ?? 'Unknown user'} · {formatTicketHistoryTimestamp(entry.changedAt)}
                             </p>
                           </div>
-                          <span className="inline-flex items-center rounded-full bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] px-2 py-0.5 text-[11px] font-medium text-[#64748B]">
+                          <span className="inline-flex items-center rounded-[2px] bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] px-2 py-0.5 text-[11px] font-medium text-[#64748B]">
                             {entry.eventType === 'field_changed' ? 'Field change' : 'Status'}
                           </span>
                         </div>
