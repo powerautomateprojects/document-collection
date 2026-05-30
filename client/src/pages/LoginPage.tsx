@@ -70,6 +70,23 @@ const INPUT_CLASS =
   'px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-0 ' +
   'rounded-[2px]'
 
+function compareOrganizationsByDisplayLabel(
+  a: { name: string; description: string | null | undefined },
+  b: { name: string; description: string | null | undefined },
+) {
+  const aDescription = (a.description ?? '').trim()
+  const bDescription = (b.description ?? '').trim()
+
+  if (aDescription && bDescription) {
+    const byDescription = aDescription.localeCompare(bDescription)
+    if (byDescription !== 0) return byDescription
+  } else if (aDescription || bDescription) {
+    return aDescription ? -1 : 1
+  }
+
+  return a.name.localeCompare(b.name)
+}
+
 export default function LoginPage() {
   const navigate = useNavigate()
   const { signIn } = useAuth()
@@ -87,7 +104,9 @@ export default function LoginPage() {
         })
       }
     }
-    return Array.from(seen.entries()).map(([id, { name, description }]) => ({ id, name, description }))
+    return Array.from(seen.entries())
+      .map(([id, { name, description }]) => ({ id, name, description }))
+      .sort(compareOrganizationsByDisplayLabel)
   }, [existingUsers])
 
   const [selectedOrgId, setSelectedOrgId] = useState<number | null>(

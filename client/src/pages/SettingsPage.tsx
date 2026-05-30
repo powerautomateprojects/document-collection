@@ -397,10 +397,26 @@ export default function SettingsPage() {
       .catch(() => {})
   }, [])
 
+  function sortOrganizationsByDescription(items: Organization[]) {
+    return items.slice().sort((a, b) => {
+      const aDescription = (a.description ?? '').trim()
+      const bDescription = (b.description ?? '').trim()
+
+      if (aDescription && bDescription) {
+        const byDescription = aDescription.localeCompare(bDescription)
+        if (byDescription !== 0) return byDescription
+      } else if (aDescription || bDescription) {
+        return aDescription ? -1 : 1
+      }
+
+      return a.name.localeCompare(b.name)
+    })
+  }
+
   function loadOrganizations() {
     setOrganizationsLoading(true)
     listOrganizations()
-      .then(setOrganizations)
+      .then(items => setOrganizations(sortOrganizationsByDescription(items)))
       .catch(err => setOrganizationCreateError((err as Error).message))
       .finally(() => setOrganizationsLoading(false))
   }
@@ -499,7 +515,7 @@ export default function SettingsPage() {
         name,
         description: description || undefined,
       })
-      setOrganizations(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
+      setOrganizations(prev => sortOrganizationsByDescription([...prev, created]))
       setNewOrganizationName('')
       setNewOrganizationDescription('')
     } catch (err) {
@@ -538,7 +554,7 @@ export default function SettingsPage() {
         name,
         description: editingOrganizationDescription.trim() || undefined,
       })
-      setOrganizations(prev => prev.map(org => (org.id === id ? updated : org)).sort((a, b) => a.name.localeCompare(b.name)))
+      setOrganizations(prev => sortOrganizationsByDescription(prev.map(org => (org.id === id ? updated : org))))
       setAllUsers(prev => prev.map(existing => (
         existing.organizationId === updated.id
           ? { ...existing, organizationName: updated.name, organization: updated.name }

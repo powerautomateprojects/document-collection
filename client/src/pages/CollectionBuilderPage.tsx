@@ -1171,7 +1171,7 @@ export default function CollectionBuilderPage() {
                     : 'border-transparent text-[#64748B] hover:text-[#2563EB] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]',
                 ].join(' ')}
               >
-                Ticket
+                Ticket Designer
               </button>
             )}
             {isEdit && (
@@ -1204,7 +1204,7 @@ export default function CollectionBuilderPage() {
                           : 'text-[#1E293B] dark:text-[#F1F5F9] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]',
                       ].join(' ')}
                     >
-                      Ticket
+                      Ticket Designer
                     </button>
                   </div>
                 )}

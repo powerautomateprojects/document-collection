@@ -75,7 +75,7 @@ router.get('/public-summary', (req: Request, res: Response): void => {
 /**
  * GET /api/stats/trend
  * Returns daily submission counts per category for the last 21 days.
- * Accessible to administrators and team_managers only.
+ * Accessible to super_admin, administrators, team_managers, and reviewers.
  * Categories with zero submissions in the window are omitted.
  */
 const TREND_DAYS = 21
@@ -83,7 +83,7 @@ const TREND_DAYS = 21
 router.get('/trend', authenticateToken, (req: Request, res: Response): void => {
   const context = loadRequestUserContext(req)
   const role = context?.role
-  if (role !== 'administrator' && role !== 'team_manager' && role !== 'reviewer') {
+  if (role !== 'super_admin' && role !== 'administrator' && role !== 'team_manager' && role !== 'reviewer') {
     res.status(403).json({ error: 'Forbidden' })
     return
   }
@@ -138,12 +138,12 @@ router.get('/trend', authenticateToken, (req: Request, res: Response): void => {
 
 /**
  * GET /api/stats
- * Returns dashboard KPI metrics. Accessible to administrators and team_managers only.
+ * Returns dashboard KPI metrics. Accessible to super_admin, administrators, team_managers, and reviewers.
  */
 router.get('/', authenticateToken, (req: Request, res: Response): void => {
   const context = loadRequestUserContext(req)
   const role = context?.role
-  if (role !== 'administrator' && role !== 'team_manager' && role !== 'reviewer') {
+  if (role !== 'super_admin' && role !== 'administrator' && role !== 'team_manager' && role !== 'reviewer') {
     res.status(403).json({ error: 'Forbidden' })
     return
   }
