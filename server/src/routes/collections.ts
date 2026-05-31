@@ -121,6 +121,7 @@ interface DbResponseValue {
   response_id: number
   field_id: number
   value: string | null
+  field_label?: string | null
   staff_updated_by_name: string | null
   staff_updated_at: string | null
 }
@@ -2007,7 +2008,10 @@ router.get('/:id/responses', authenticateToken, (req: Request, res: Response) =>
   const ph = responseIds.map(() => '?').join(',')
   const values = db
     .prepare(
-      `SELECT * FROM collection_response_values WHERE response_id IN (${ph})`
+      `SELECT rv.*, cf.label AS field_label
+       FROM collection_response_values rv
+       LEFT JOIN collection_fields cf ON cf.id = rv.field_id
+       WHERE rv.response_id IN (${ph})`
     )
     .all(...responseIds) as unknown as DbResponseValue[]
 
@@ -2027,6 +2031,7 @@ router.get('/:id/responses', authenticateToken, (req: Request, res: Response) =>
       values: (valsByResponse.get(r.id) ?? []).map(v => ({
         fieldId: v.field_id,
         value: v.value,
+        fieldLabel: v.field_label ?? null,
         staffUpdatedByName: v.staff_updated_by_name ?? null,
         staffUpdatedAt: v.staff_updated_at ?? null,
       })),

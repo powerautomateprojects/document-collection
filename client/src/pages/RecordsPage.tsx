@@ -497,7 +497,43 @@ function renderResponseValue(field: CollectionField | undefined, value: string |
   return <p className="text-sm text-[#1E293B] dark:text-[#F1F5F9] whitespace-pre-wrap">{raw}</p>
 }
 
-function renderTicketHistoryValue(fieldType: string | null | undefined, value: string | null) {
+function normalizeCustomTableRows(
+  rows: Array<Record<string, unknown>>,
+  configuredColumns: string[],
+): { columns: string[]; rows: Array<Record<string, string>> } {
+  if (rows.length === 0) {
+    return { columns: configuredColumns, rows: [] }
+  }
+
+  const normalizedRows = rows.map((row) => {
+    const sourceKeys = Object.keys(row)
+    const normalized: Record<string, string> = {}
+
+    if (configuredColumns.length > 0) {
+      configuredColumns.forEach((column, index) => {
+        const directValue = row[column]
+        const fallbackKey = sourceKeys[index]
+        const fallbackValue = fallbackKey ? row[fallbackKey] : undefined
+        const resolved = directValue ?? fallbackValue
+        normalized[column] = resolved == null ? '' : String(resolved)
+      })
+      return normalized
+    }
+
+    sourceKeys.forEach((key) => {
+      normalized[key] = row[key] == null ? '' : String(row[key])
+    })
+    return normalized
+  })
+
+  const columns = configuredColumns.length > 0
+    ? configuredColumns
+    : Object.keys(normalizedRows[0] ?? {})
+
+  return { columns, rows: normalizedRows }
+}
+
+function renderTicketHistoryValue(fieldType: string | null | undefined, value: string | null, field?: TicketField) {
   const raw = value ?? ''
   if (!raw) {
     return <span className="text-sm text-[#94A3B8] italic">Empty</span>
@@ -526,7 +562,52 @@ function renderTicketHistoryValue(fieldType: string | null | undefined, value: s
     return <span className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">Attachment provided</span>
   }
 
-  if (fieldType === 'custom_table' || fieldType === 'matrix_likert_scale') {
+  if (fieldType === 'custom_table') {
+    try {
+      const rows = JSON.parse(raw) as Array<Record<string, unknown>>
+      if (Array.isArray(rows) && rows.length > 0) {
+        const configuredColumns = (field?.tableColumns ?? []).map((column) => column.name)
+        const normalizedTable = normalizeCustomTableRows(rows, configuredColumns)
+
+        return (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr>
+                  {normalizedTable.columns.map((column) => (
+                    <th
+                      key={column}
+                      className="text-left text-xs font-medium text-[#64748B] border border-[#E2E8F0] dark:border-[#334155] px-2 py-1.5 bg-[#F8FAFC] dark:bg-[#0F172A]"
+                    >
+                      {column}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {normalizedTable.rows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {normalizedTable.columns.map((column) => (
+                      <td
+                        key={column}
+                        className="border border-[#E2E8F0] dark:border-[#334155] px-2 py-1.5 text-[#1E293B] dark:text-[#F1F5F9]"
+                      >
+                        {row[column] || '—'}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      }
+    } catch {
+      // Fall back to raw rendering.
+    }
+  }
+
+  if (fieldType === 'matrix_likert_scale') {
     return (
       <pre className="text-xs text-[#1E293B] dark:text-[#F1F5F9] whitespace-pre-wrap break-words font-mono bg-[#F8FAFC] dark:bg-[#0F172A] rounded p-2 border border-[#E2E8F0] dark:border-[#334155]">
         {raw}
@@ -1969,7 +2050,7 @@ export default function RecordsPage() {
                         className="rounded border border-[#E2E8F0] dark:border-[#334155] p-4 bg-[#F8FAFC] dark:bg-[#0F172A]"
                       >
                         <p className="text-xs font-medium uppercase tracking-wide text-[#64748B] mb-2">
-                          {field?.label || `Field #${answer.fieldId}`}
+                          {field?.label || answer.fieldLabel || `Field #${answer.fieldId}`}
                         </p>
                         {renderResponseValue(field, answer.value)}
                       </div>
@@ -2274,7 +2355,7 @@ export default function RecordsPage() {
                             {field.required && <span className="text-red-500 ml-0.5">*</span>}
                           </label>
                           <div className="rounded border border-[#E2E8F0] dark:border-[#334155] px-3 py-2.5 bg-[#F8FAFC] dark:bg-[#0F172A] min-h-[42px]">
-                            {renderTicketHistoryValue(field.type, val || null)}
+                            {renderTicketHistoryValue(field.type, val || null, field)}
                           </div>
                         </div>
                       )

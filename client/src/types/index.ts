@@ -125,7 +125,7 @@ export interface CollectionResponse {
   respondentName: string | null
   respondentEmail: string | null
   submittedAt: string
-  values: { fieldId: number; value: string | null; staffUpdatedByName?: string | null; staffUpdatedAt?: string | null }[]
+  values: { fieldId: number; value: string | null; fieldLabel?: string | null; staffUpdatedByName?: string | null; staffUpdatedAt?: string | null }[]
 }
 
 export interface SubmissionComment {
