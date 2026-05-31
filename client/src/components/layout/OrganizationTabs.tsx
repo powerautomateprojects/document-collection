@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { MapPin } from 'lucide-react'
+import { Globe } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 
 function getOrganizationLabel(organization: {
@@ -37,8 +37,8 @@ export default function OrganizationTabs() {
   const canSwitchOrganizations = user.organizations.length > 1
 
   return (
-    <div className="relative flex items-center gap-1.5" ref={containerRef}>
-      <span className="max-w-[220px] truncate text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9]">
+    <div className="relative flex items-center gap-1 min-w-0 max-w-[calc(100vw-12rem)] sm:max-w-none" ref={containerRef}>
+      <span className="max-w-[96px] sm:max-w-[220px] truncate text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9]">
         {getOrganizationLabel(activeOrganization)}
       </span>
       <button
@@ -59,11 +59,11 @@ export default function OrganizationTabs() {
         aria-expanded={canSwitchOrganizations ? open : undefined}
         disabled={!canSwitchOrganizations}
       >
-        <MapPin size={18} />
+        <Globe size={18} />
       </button>
 
       {open && canSwitchOrganizations && (
-        <div className="absolute right-0 top-full mt-1 w-72 bg-white dark:bg-[#0F172A] border border-[#E2E8F0] dark:border-[#1E293B] rounded-[2px] overflow-hidden z-50 shadow-sm">
+        <div className="absolute right-0 top-full mt-1 w-[min(18rem,calc(100vw-1rem))] sm:w-72 bg-white dark:bg-[#0F172A] border border-[#E2E8F0] dark:border-[#1E293B] rounded-[2px] overflow-hidden z-50 shadow-sm">
           <div className="px-3 py-2 border-b border-[#E2E8F0] dark:border-[#1E293B]">
             <p className="text-[11px] tracking-[0.18em] uppercase text-[#94A3B8] dark:text-[#475569] font-mono">
               Organizations
