@@ -3,12 +3,15 @@ import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { getDb } from '../database/db'
 import { authenticateToken, JWT_SECRET } from '../middleware/auth'
+import { loadRequestUserContext } from '../middleware/organizationAccess'
+import { loadUserAccessProfile, toApiUser, type MembershipRole, type UserAccessProfile, type UserRole } from '../lib/userAccess'
 import { verifyPassword, hashPassword } from './invitations'
 import { sendNotificationEmail, isEmailDeliveryConfigured } from '../services/notificationEmail'
 
 const router = Router()
 
 const COOKIE_MAX_AGE_MS = 8 * 60 * 60 * 1000 // 8 hours
+const RESET_EXPIRY_MS = 60 * 60 * 1000 // 1 hour
 
 function setAuthCookie(res: Response, token: string): void {
   res.cookie('dcp-token', token, {
@@ -20,99 +23,41 @@ function setAuthCookie(res: Response, token: string): void {
   })
 }
 
-interface DbUser {
-  id: number
-  name: string
-  email: string
-  role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
-  organization: string | null
-  organization_id: number | null
-  organization_name?: string | null
-  organization_slug?: string | null
-  organization_description?: string | null
-  created_at: string
-  password_hash?: string | null
-  must_change_password?: number
-  invite_token?: string | null
-}
-
-function toApiUser(u: DbUser) {
-  return {
-    id: u.id,
-    name: u.name,
-    email: u.email,
-    role: u.role,
-    organizationId: u.organization_id,
-    organizationName: u.organization_name ?? u.organization,
-    organizationSlug: u.organization_slug ?? null,
-    organizationDescription: u.organization_description ?? null,
-    ...(u.organization ? { organization: u.organization } : {}),
-    createdAt: u.created_at,
-  }
-}
-
-function signUserToken(user: DbUser): string {
+function signUserToken(user: UserAccessProfile): string {
   return jwt.sign(
     {
       sub: user.id,
       role: user.role,
-      organizationId: user.organization_id,
-      organizationName: user.organization_name ?? user.organization,
+      organizationId: user.activeOrganizationId,
+      organizationName: user.activeOrganizationName,
+      activeOrganizationId: user.activeOrganizationId,
     },
     JWT_SECRET,
     { expiresIn: '8h' },
   )
 }
 
-/**
- * @swagger
- * /api/auth/users:
- *   get:
- *     summary: List users available in the demo/prototype login selector
- *     tags: [Auth]
- *     responses:
- *       200:
- *         description: List of users
- */
+function isMembershipRole(value: unknown): value is MembershipRole {
+  return value === 'administrator' || value === 'team_manager' || value === 'reviewer' || value === 'user'
+}
+
+function hashToken(raw: string): string {
+  return crypto.createHash('sha256').update(raw).digest('hex')
+}
+
 router.get('/users', (_req: Request, res: Response) => {
   const db = getDb()
-  const users = db
-    .prepare(
-      `SELECT u.*, o.name AS organization_name, o.slug AS organization_slug, o.description AS organization_description
-       FROM users u
-       LEFT JOIN organizations o ON o.id = u.organization_id
-       ORDER BY u.name COLLATE NOCASE ASC, u.id ASC`
-    )
-    .all() as unknown as DbUser[]
+  const userIds = db
+    .prepare('SELECT id FROM users ORDER BY name COLLATE NOCASE ASC, id ASC')
+    .all() as Array<{ id: number }>
+
+  const users = userIds
+    .map(row => loadUserAccessProfile(row.id, null, db))
+    .filter((user): user is UserAccessProfile => Boolean(user))
 
   res.json(users.map(toApiUser))
 })
 
-/**
- * @swagger
- * /api/auth/login:
- *   post:
- *     summary: Sign in as an existing user (by userId — demo/prototype flow)
- *     tags: [Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [userId]
- *             properties:
- *               userId:
- *                 type: integer
- *                 example: 1
- *     responses:
- *       200:
- *         description: Login successful, returns JWT and user object
- *       400:
- *         description: Bad request
- *       404:
- *         description: User not found
- */
 router.post('/login', (req: Request, res: Response) => {
   const { userId } = req.body as { userId: unknown }
 
@@ -121,16 +66,7 @@ router.post('/login', (req: Request, res: Response) => {
     return
   }
 
-  const db = getDb()
-  const user = db
-    .prepare(
-      `SELECT u.*, o.name AS organization_name, o.slug AS organization_slug, o.description AS organization_description
-       FROM users u
-       LEFT JOIN organizations o ON o.id = u.organization_id
-       WHERE u.id = ?`
-    )
-    .get(userId) as unknown as DbUser | undefined
-
+  const user = loadUserAccessProfile(userId)
   if (!user) {
     res.status(404).json({ error: 'User not found' })
     return
@@ -141,59 +77,14 @@ router.post('/login', (req: Request, res: Response) => {
   res.json({ token, user: toApiUser(user) })
 })
 
-/**
- * @swagger
- * /api/auth/logout:
- *   post:
- *     summary: Sign out and clear the auth cookie
- *     tags: [Auth]
- *     responses:
- *       200:
- *         description: Logged out
- */
 router.post('/logout', (_req: Request, res: Response) => {
   res.clearCookie('dcp-token', { path: '/' })
   res.json({ message: 'Logged out' })
 })
 
-/**
- * @swagger
- * /api/auth/register:
- *   post:
- *     summary: Register a new user account
- *     tags: [Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [name, email]
- *             properties:
- *               name:
- *                 type: string
- *                 example: Jane Doe
- *               email:
- *                 type: string
- *                 format: email
- *                 example: jane@example.com
- *               role:
- *                 type: string
- *                 enum: [administrator, team_manager, user]
- *                 default: user
- *               organization:
- *                 type: string
- *                 example: Alpha Team
- *     responses:
- *       201:
- *         description: User created; returns JWT and user object
- *       400:
- *         description: Validation error
- *       409:
- *         description: Email already registered
- */
 router.post('/register', authenticateToken, (req: Request, res: Response) => {
-  if (req.user?.role !== 'administrator') {
+  const currentUser = loadRequestUserContext(req)
+  if (!currentUser || (currentUser.role !== 'administrator' && currentUser.role !== 'super_admin')) {
     res.status(403).json({ error: 'Administrator access required' })
     return
   }
@@ -217,85 +108,72 @@ router.post('/register', authenticateToken, (req: Request, res: Response) => {
   const VALID_ROLES = ['super_admin', 'administrator', 'team_manager', 'reviewer', 'user'] as const
   const userRole =
     typeof role === 'string' && (VALID_ROLES as readonly string[]).includes(role)
-      ? (role as typeof VALID_ROLES[number])
+      ? (role as UserRole)
       : 'user'
 
+  if (currentUser.role !== 'super_admin' && userRole === 'super_admin') {
+    res.status(403).json({ error: 'Only a super admin can create another super admin' })
+    return
+  }
+
   const resolvedOrganizationId =
-    typeof organizationId === 'number' && Number.isInteger(organizationId) && organizationId > 0
-      ? organizationId
-      : null
+    currentUser.role === 'super_admin'
+      ? (typeof organizationId === 'number' && Number.isInteger(organizationId) && organizationId > 0 ? organizationId : null)
+      : currentUser.organizationId
+
+  if (userRole !== 'super_admin' && resolvedOrganizationId === null) {
+    res.status(400).json({ error: 'organizationId is required' })
+    return
+  }
 
   const db = getDb()
-
   const existing = db
     .prepare('SELECT id FROM users WHERE email = ?')
-    .get(email.trim()) as unknown as { id: number } | undefined
+    .get(email.trim()) as { id: number } | undefined
 
   if (existing) {
     res.status(409).json({ error: 'Email already registered' })
     return
   }
 
-  if (resolvedOrganizationId === null) {
-    res.status(400).json({ error: 'organizationId is required' })
-    return
+  let organization: { id: number; name: string } | undefined
+  if (resolvedOrganizationId !== null) {
+    organization = db
+      .prepare('SELECT id, name FROM organizations WHERE id = ? AND is_active = 1')
+      .get(resolvedOrganizationId) as { id: number; name: string } | undefined
+    if (!organization) {
+      res.status(400).json({ error: 'Selected organization does not exist' })
+      return
+    }
   }
 
-  const organization = db
-    .prepare('SELECT id, name FROM organizations WHERE id = ? AND is_active = 1')
-    .get(resolvedOrganizationId) as unknown as { id: number; name: string } | undefined
+  const insertedId = db.transaction(() => {
+    const inserted = db
+      .prepare('INSERT INTO users (name, email, role, organization, organization_id) VALUES (?, ?, ?, ?, ?)')
+      .run(name.trim(), email.trim(), userRole, organization?.name ?? null, organization?.id ?? null)
 
-  if (!organization) {
-    res.status(400).json({ error: 'Selected organization does not exist' })
+    const id = Number(inserted.lastInsertRowid)
+    if (organization && isMembershipRole(userRole)) {
+      db.prepare(
+        `INSERT INTO user_organizations (user_id, organization_id, role, is_default) VALUES (?, ?, ?, 1)`
+      ).run(id, organization.id, userRole)
+    }
+    return id
+  })()
+
+  const newUser = loadUserAccessProfile(insertedId)
+  if (!newUser) {
+    res.status(500).json({ error: 'Failed to load created user' })
     return
   }
-
-  const result = db
-    .prepare(
-      'INSERT INTO users (name, email, role, organization, organization_id) VALUES (?, ?, ?, ?, ?)'
-    )
-    .run(name.trim(), email.trim(), userRole, organization.name, organization.id)
-
-  const insertedId = Number(result.lastInsertRowid)
-  const newUser = db
-    .prepare(
-      `SELECT u.*, o.name AS organization_name, o.slug AS organization_slug
-       FROM users u
-       LEFT JOIN organizations o ON o.id = u.organization_id
-       WHERE u.id = ?`
-    )
-    .get(insertedId) as unknown as DbUser
 
   const token = signUserToken(newUser)
   setAuthCookie(res, token)
   res.status(201).json({ token, user: toApiUser(newUser) })
 })
 
-/**
- * @swagger
- * /api/auth/me:
- *   get:
- *     summary: Get the currently authenticated user's profile
- *     tags: [Auth]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Current user object
- *       401:
- *         description: Unauthorized
- */
 router.get('/me', authenticateToken, (req: Request, res: Response) => {
-  const db = getDb()
-  const user = db
-    .prepare(
-      `SELECT u.*, o.name AS organization_name, o.slug AS organization_slug, o.description AS organization_description
-       FROM users u
-       LEFT JOIN organizations o ON o.id = u.organization_id
-       WHERE u.id = ?`
-    )
-    .get(req.user!.sub) as unknown as DbUser | undefined
-
+  const user = loadUserAccessProfile(req.user!.sub, req.user?.activeOrganizationId ?? req.user?.organizationId ?? null)
   if (!user) {
     res.status(404).json({ error: 'User not found' })
     return
@@ -304,10 +182,29 @@ router.get('/me', authenticateToken, (req: Request, res: Response) => {
   res.json(toApiUser(user))
 })
 
-/**
- * POST /api/auth/login-with-password
- * Sign in using email + password (for invited/registered users).
- */
+router.post('/switch-organization', authenticateToken, (req: Request, res: Response) => {
+  const { organizationId } = req.body as { organizationId?: unknown }
+  if (typeof organizationId !== 'number' || !Number.isInteger(organizationId) || organizationId < 1) {
+    res.status(400).json({ error: 'organizationId must be a positive integer' })
+    return
+  }
+
+  const user = loadUserAccessProfile(req.user!.sub, organizationId)
+  if (!user) {
+    res.status(404).json({ error: 'User not found' })
+    return
+  }
+
+  if (user.role !== 'super_admin' && user.activeOrganizationId !== organizationId) {
+    res.status(403).json({ error: 'You do not belong to the selected organization' })
+    return
+  }
+
+  const token = signUserToken(user)
+  setAuthCookie(res, token)
+  res.json({ token, user: toApiUser(user) })
+})
+
 router.post('/login-with-password', (req: Request, res: Response) => {
   const { email, password } = req.body as { email: unknown; password: unknown }
 
@@ -317,30 +214,28 @@ router.post('/login-with-password', (req: Request, res: Response) => {
   }
 
   const db = getDb()
-  const user = db
-    .prepare(
-      `SELECT u.*, o.name AS organization_name, o.slug AS organization_slug, o.description AS organization_description
-       FROM users u
-       LEFT JOIN organizations o ON o.id = u.organization_id
-       WHERE lower(u.email) = lower(?)`
-    )
-    .get(email.trim()) as unknown as DbUser | undefined
+  const userRow = db
+    .prepare('SELECT id FROM users WHERE lower(email) = lower(?)')
+    .get(email.trim()) as { id: number } | undefined
 
-  // Generic error to prevent email enumeration
   const INVALID = 'Invalid email or password'
+  if (!userRow) {
+    res.status(401).json({ error: INVALID })
+    return
+  }
 
+  const user = loadUserAccessProfile(userRow.id)
   if (!user) {
     res.status(401).json({ error: INVALID })
     return
   }
 
-  // Account has a pending invite but no password yet
-  if (user.invite_token || !user.password_hash) {
+  if (user.inviteToken || !user.passwordHash) {
     res.status(401).json({ error: 'Your account is not yet activated. Please use the invite link sent to your email.' })
     return
   }
 
-  if (!verifyPassword(password, user.password_hash)) {
+  if (!verifyPassword(password, user.passwordHash)) {
     res.status(401).json({ error: INVALID })
     return
   }
@@ -350,17 +245,6 @@ router.post('/login-with-password', (req: Request, res: Response) => {
   res.json({ token, user: toApiUser(user) })
 })
 
-const RESET_EXPIRY_MS = 60 * 60 * 1000 // 1 hour
-
-function hashToken(raw: string): string {
-  return crypto.createHash('sha256').update(raw).digest('hex')
-}
-
-/**
- * POST /api/auth/forgot-password
- * Public — sends a password-reset link to the given email.
- * Always returns 200 to avoid leaking whether an email is registered.
- */
 router.post('/forgot-password', async (req: Request, res: Response) => {
   const { email } = req.body as { email: unknown }
 
@@ -373,9 +257,8 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
   interface ResetUser { id: number; name: string; password_hash: string | null; invite_token: string | null }
   const user = db
     .prepare('SELECT id, name, password_hash, invite_token FROM users WHERE LOWER(email) = LOWER(?)')
-    .get(email.trim()) as unknown as ResetUser | undefined
+    .get(email.trim()) as ResetUser | undefined
 
-  // Silently succeed if no matching active account
   if (!user || !user.password_hash || user.invite_token) {
     res.json({ message: 'If that email is registered, a reset link has been sent.' })
     return
@@ -418,7 +301,6 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     }
   }
 
-  // Expose link in non-production when email is not configured
   if (process.env.NODE_ENV !== 'production' && !isEmailDeliveryConfigured()) {
     responsePayload.resetLink = resetLink
   }
@@ -426,10 +308,6 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
   res.json(responsePayload)
 })
 
-/**
- * POST /api/auth/reset-password
- * Public — validates reset token, sets new password.
- */
 router.post('/reset-password', (req: Request, res: Response) => {
   const { token, newPassword } = req.body as { token: unknown; newPassword: unknown }
 
@@ -448,7 +326,7 @@ router.post('/reset-password', (req: Request, res: Response) => {
   interface ResetUser { id: number; reset_token: string | null; reset_token_expires_at: string | null }
   const user = db
     .prepare('SELECT id, reset_token, reset_token_expires_at FROM users WHERE reset_token = ?')
-    .get(tokenHash) as unknown as ResetUser | undefined
+    .get(tokenHash) as ResetUser | undefined
 
   if (!user) {
     res.status(400).json({ error: 'Invalid or expired reset link.' })

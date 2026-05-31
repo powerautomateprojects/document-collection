@@ -8,6 +8,7 @@ export interface JwtPayload {
   role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
   organizationId?: number | null
   organizationName?: string | null
+  activeOrganizationId?: number | null
 }
 
 // Augment Express Request with authenticated user

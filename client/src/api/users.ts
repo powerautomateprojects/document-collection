@@ -1,14 +1,12 @@
 import { authHeaders, handleUnauthorizedResponse } from './authEvents'
+import type { MembershipRole, User, UserRole } from '../types'
 
-export interface AppUser {
-  id: number
-  name: string
-  email: string
-  role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
-  organizationId: number | null
-  organizationName: string | null
-  organization?: string
-  createdAt: string
+export interface AppUser extends User {}
+
+export interface UserMembershipPayload {
+  organizationId: number
+  role: MembershipRole
+  isDefault?: boolean
 }
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -28,8 +26,9 @@ export async function listUsers(): Promise<AppUser[]> {
 export async function createUser(payload: {
   name: string
   email: string
-  role?: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
-  organizationId: number
+  role?: UserRole
+  organizationId?: number
+  memberships?: UserMembershipPayload[]
 }): Promise<AppUser> {
   const res = await fetch('/api/users', {
     method: 'POST',
@@ -44,8 +43,9 @@ export async function updateUser(
   payload: {
     name: string
     email: string
-    role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
-    organizationId: number
+    role: UserRole
+    organizationId?: number
+    memberships?: UserMembershipPayload[]
   }
 ): Promise<AppUser> {
   const res = await fetch(`/api/users/${id}`, {

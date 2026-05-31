@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import type { User } from '../types'
+import type { AuthResponse, User } from '../types'
 import { AUTH_EXPIRED_EVENT } from '../api/authEvents'
 
 interface AuthContextValue {
@@ -7,6 +7,7 @@ interface AuthContextValue {
   token: string | null
   signIn: (user: User, token: string) => void
   signOut: () => void
+  switchOrganization: (organizationId: number) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -37,6 +38,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {})
   }
 
+  const switchOrganization = async (organizationId: number) => {
+    const res = await fetch('/api/auth/switch-organization', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ organizationId }),
+    })
+
+    const data = await res.json().catch(() => ({})) as Partial<AuthResponse> & { error?: string }
+    if (!res.ok || !data.user) {
+      throw new Error(data.error ?? 'Failed to switch organization')
+    }
+
+    setUser(data.user)
+    localStorage.setItem('dcp-user', JSON.stringify(data.user))
+  }
+
   useEffect(() => {
     const onAuthExpired = () => {
       signOut()
@@ -65,7 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, token, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, token, signIn, signOut, switchOrganization }}>
       {children}
     </AuthContext.Provider>
   )

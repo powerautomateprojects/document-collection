@@ -52,7 +52,7 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
     return
   }
 
-  const VALID_ROLES = ['administrator', 'team_manager', 'user'] as const
+  const VALID_ROLES = ['administrator', 'team_manager', 'reviewer', 'user'] as const
   const userRole =
     typeof role === 'string' && (VALID_ROLES as readonly string[]).includes(role)
       ? (role as typeof VALID_ROLES[number])
@@ -83,15 +83,30 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
 
   if (existing) {
     // Resend: refresh token + name
-    db.prepare(
-      `UPDATE users SET name = ?, invite_token = ?, invite_token_expires_at = ?, organization_id = ? WHERE id = ?`
-    ).run(name.trim(), tokenHash, expiresAt, organizationId, existing.id)
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE users
+         SET name = ?, role = ?, organization_id = ?, invite_token = ?, invite_token_expires_at = ?
+         WHERE id = ?`
+      ).run(name.trim(), userRole, organizationId, tokenHash, expiresAt, existing.id)
+      db.prepare('DELETE FROM user_organizations WHERE user_id = ?').run(existing.id)
+      db.prepare(
+        `INSERT INTO user_organizations (user_id, organization_id, role, is_default)
+         VALUES (?, ?, ?, 1)`
+      ).run(existing.id, organizationId, userRole)
+    })()
   } else {
     // Create pending user (no password yet)
-    db.prepare(
-      `INSERT INTO users (name, email, role, organization_id, must_change_password, invite_token, invite_token_expires_at)
-       VALUES (?, ?, ?, ?, 1, ?, ?)`
-    ).run(name.trim(), email.trim(), userRole, organizationId, tokenHash, expiresAt)
+    db.transaction(() => {
+      const inserted = db.prepare(
+        `INSERT INTO users (name, email, role, organization_id, must_change_password, invite_token, invite_token_expires_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?)`
+      ).run(name.trim(), email.trim(), userRole, organizationId, tokenHash, expiresAt)
+      db.prepare(
+        `INSERT INTO user_organizations (user_id, organization_id, role, is_default)
+         VALUES (?, ?, ?, 1)`
+      ).run(Number(inserted.lastInsertRowid), organizationId, userRole)
+    })()
   }
 
   const appUrl = (process.env.APP_URL ?? 'http://localhost:5173').replace(/\/$/, '')

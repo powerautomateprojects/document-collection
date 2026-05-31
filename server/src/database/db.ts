@@ -1532,6 +1532,79 @@ function runMigrations(db: AppDatabase): void {
     }
   }
 
+  if (!tableExists(db, 'user_organizations')) {
+    db.exec(`
+      CREATE TABLE user_organizations (
+        user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        role            TEXT    NOT NULL CHECK(role IN ('administrator', 'team_manager', 'reviewer', 'user')),
+        is_default      INTEGER NOT NULL DEFAULT 0,
+        created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (user_id, organization_id)
+      )
+    `)
+    console.log('[db] Migration: created user_organizations table')
+  }
+
+  const existingUserOrganizationCols = db
+    .prepare(`PRAGMA table_info(user_organizations)`)
+    .all() as Array<{ name: string }>
+  const userOrgColNames = new Set(existingUserOrganizationCols.map(column => column.name))
+  if (!userOrgColNames.has('is_default')) {
+    db.exec(`ALTER TABLE user_organizations ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0`)
+    console.log('[db] Migration: added user_organizations.is_default')
+  }
+  if (!userOrgColNames.has('created_at')) {
+    db.exec(`ALTER TABLE user_organizations ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'))`)
+    console.log('[db] Migration: added user_organizations.created_at')
+  }
+  if (!userOrgColNames.has('updated_at')) {
+    db.exec(`ALTER TABLE user_organizations ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))`)
+    console.log('[db] Migration: added user_organizations.updated_at')
+  }
+
+  db.prepare(`
+    INSERT OR IGNORE INTO user_organizations (user_id, organization_id, role, is_default)
+    SELECT
+      u.id,
+      u.organization_id,
+      CASE WHEN u.role = 'super_admin' THEN 'administrator' ELSE u.role END,
+      1
+    FROM users u
+    WHERE u.organization_id IS NOT NULL
+  `).run()
+
+  const membershipUsersMissingDefault = db
+    .prepare(`
+      SELECT DISTINCT uo.user_id
+      FROM user_organizations uo
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM user_organizations existing
+        WHERE existing.user_id = uo.user_id AND existing.is_default = 1
+      )
+    `)
+    .all() as Array<{ user_id: number }>
+
+  for (const row of membershipUsersMissingDefault) {
+    const defaultMembership = db
+      .prepare(`
+        SELECT organization_id
+        FROM user_organizations
+        WHERE user_id = ?
+        ORDER BY organization_id ASC
+        LIMIT 1
+      `)
+      .get(row.user_id) as { organization_id: number } | undefined
+
+    if (defaultMembership) {
+      db.prepare(
+        `UPDATE user_organizations SET is_default = 1, updated_at = datetime('now') WHERE user_id = ? AND organization_id = ?`
+      ).run(row.user_id, defaultMembership.organization_id)
+    }
+  }
+
   // ── Locations table ──────────────────────────────────────────────────────────
   if (!tableExists(db, 'locations')) {
     db.exec(`

@@ -1,18 +1,11 @@
 import type { Request } from 'express'
-import { getDb } from '../database/db'
+import { loadUserAccessProfile } from '../lib/userAccess'
 
 export interface RequestUserContext {
   id: number
   role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
   organizationId: number | null
   organizationName: string | null
-}
-
-interface DbUserContext {
-  id: number
-  role: 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
-  organization_id: number | null
-  organization_name: string | null
 }
 
 /** Returns true only for super_admin — they bypass all org-scoping. */
@@ -41,33 +34,30 @@ export function loadRequestUserContext(req: Request): RequestUserContext | null 
     return null
   }
 
-  const db = getDb()
-  const user = db
-    .prepare(
-      `SELECT u.id, u.role, u.organization_id, o.name AS organization_name
-       FROM users u
-       LEFT JOIN organizations o ON o.id = u.organization_id
-       WHERE u.id = ?`
-    )
-    .get(userId) as unknown as DbUserContext | undefined
-
-  if (!user) {
+  const profile = loadUserAccessProfile(userId, req.user?.activeOrganizationId ?? req.user?.organizationId ?? null)
+  if (!profile) {
     return null
   }
 
   if (
     req.user &&
-    (req.user.organizationId === undefined || req.user.organizationName === undefined)
+    (
+      req.user.organizationId !== profile.activeOrganizationId ||
+      req.user.organizationName !== profile.activeOrganizationName ||
+      req.user.role !== profile.role
+    )
   ) {
-    req.user.organizationId = user.organization_id
-    req.user.organizationName = user.organization_name
+    req.user.organizationId = profile.activeOrganizationId
+    req.user.organizationName = profile.activeOrganizationName
+    req.user.activeOrganizationId = profile.activeOrganizationId
+    req.user.role = profile.role
   }
 
   return {
-    id: user.id,
-    role: user.role,
-    organizationId: user.organization_id,
-    organizationName: user.organization_name,
+    id: profile.id,
+    role: profile.role,
+    organizationId: profile.activeOrganizationId,
+    organizationName: profile.activeOrganizationName,
   }
 }
 

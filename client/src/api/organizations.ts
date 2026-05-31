@@ -51,10 +51,11 @@ export async function updateOrganization(
   return handleResponse<Organization>(res)
 }
 
-export async function deleteOrganization(id: number): Promise<void> {
+export async function deleteOrganization(id: number, confirmationText: string): Promise<void> {
   const res = await fetch(`/api/organizations/${id}`, {
     method: 'DELETE',
     headers: authHeaders(),
+    body: JSON.stringify({ confirmationText }),
   })
   await handleResponse<void>(res)
 }

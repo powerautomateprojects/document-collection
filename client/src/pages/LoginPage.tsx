@@ -27,21 +27,14 @@ const INPUT_CLASS =
   'px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-0 ' +
   'rounded-[2px]'
 
-function compareOrganizationsByDisplayLabel(
-  a: { name: string; description: string | null | undefined },
-  b: { name: string; description: string | null | undefined },
-) {
-  const aDescription = (a.description ?? '').trim()
-  const bDescription = (b.description ?? '').trim()
-
-  if (aDescription && bDescription) {
-    const byDescription = aDescription.localeCompare(bDescription)
-    if (byDescription !== 0) return byDescription
-  } else if (aDescription || bDescription) {
-    return aDescription ? -1 : 1
+function describeUserOrganizations(user: User) {
+  if (user.organizations.length === 0) {
+    return user.organizationDescription?.trim() || user.organizationName || 'No organization'
   }
 
-  return a.name.localeCompare(b.name)
+  return user.organizations
+    .map(org => org.organizationDescription?.trim() || org.organizationName)
+    .join(', ')
 }
 
 export default function LoginPage() {
@@ -51,30 +44,9 @@ export default function LoginPage() {
   const [existingUsers, setExistingUsers] = useState<User[]>([])
   const [loadingUsers, setLoadingUsers] = useState(true)
 
-  // Derive unique orgs from the loaded users list
-  const organizations = useMemo(() => {
-    const seen = new Map<number, { name: string; description: string | null | undefined }>()
-    for (const u of existingUsers) {
-      if (u.organizationId != null && !seen.has(u.organizationId)) {
-        seen.set(u.organizationId, {
-          name: u.organizationName ?? `Org ${u.organizationId}`,
-          description: u.organizationDescription,
-        })
-      }
-    }
-    return Array.from(seen.entries())
-      .map(([id, { name, description }]) => ({ id, name, description }))
-      .sort(compareOrganizationsByDisplayLabel)
-  }, [existingUsers])
-
-  const [selectedOrgId, setSelectedOrgId] = useState<number | null>(null)
-
-  const filteredUsers = useMemo(
-    () =>
-      selectedOrgId == null
-        ? existingUsers
-        : existingUsers.filter(u => u.organizationId === selectedOrgId),
-    [existingUsers, selectedOrgId]
+  const sortedUsers = useMemo(
+    () => [...existingUsers].sort((a, b) => a.name.localeCompare(b.name) || a.email.localeCompare(b.email)),
+    [existingUsers]
   )
 
   const [selectedUserId, setSelectedUserId] = useState<string>('')
@@ -84,12 +56,6 @@ export default function LoginPage() {
   )
   const [loginSubtitle, setLoginSubtitle] = useState('Enterprise Staff Support')
   const [publicStats, setPublicStats] = useState<PublicSummaryStats>(DEFAULT_PUBLIC_STATS)
-
-  // When org changes, reset user selection to first user in that org
-  useEffect(() => {
-    const first = filteredUsers[0]
-    setSelectedUserId(first ? String(first.id) : '')
-  }, [selectedOrgId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch global stats once on mount (not scoped to selected org)
   useEffect(() => {
@@ -114,12 +80,6 @@ export default function LoginPage() {
         }
 
         setExistingUsers(data)
-        setSelectedOrgId(orgId => {
-          // Keep current org if it still exists in the new data, else pick first
-          const firstOrgId = data.find(u => u.organizationId != null)?.organizationId ?? null
-          if (orgId != null && data.some(u => u.organizationId === orgId)) return orgId
-          return firstOrgId
-        })
         setSelectedUserId(currentUserId => {
           if (data.some(user => String(user.id) === currentUserId)) {
             return currentUserId
@@ -130,7 +90,6 @@ export default function LoginPage() {
       })
       .catch(() => {
         setExistingUsers([])
-        setSelectedOrgId(null)
         setSelectedUserId('')
       })
       .finally(() => setLoadingUsers(false))
@@ -255,45 +214,31 @@ export default function LoginPage() {
             {loadingUsers ? 'Loading available profiles…' : 'Pick a profile to continue.'}
           </p>
 
-          {/* Organization dropdown */}
-          <label className="block text-[10px] font-semibold tracking-[0.18em] text-[#64748B] dark:text-[#475569] uppercase mb-1.5">
-            Organization
-          </label>
-          <select
-            value={selectedOrgId ?? ''}
-            onChange={e => setSelectedOrgId(e.target.value ? Number(e.target.value) : null)}
-            disabled={loadingUsers || organizations.length === 0}
-            className={INPUT_CLASS + ' mb-4 appearance-none cursor-pointer'}
-            style={{ backgroundImage: 'none' }}
-          >
-            {loadingUsers && <option value="">Loading organizations…</option>}
-            {!loadingUsers && organizations.length === 0 && <option value="">No organizations available</option>}
-            {organizations.map(org => (
-              <option key={org.id} value={org.id}>
-                {org.description ? `${org.description} (${org.name})` : org.name}
-              </option>
-            ))}
-          </select>
-
-          {/* User dropdown — filtered by selected org */}
+          {/* User dropdown */}
           <label className="block text-[10px] font-semibold tracking-[0.18em] text-[#64748B] dark:text-[#475569] uppercase mb-1.5">
             User
           </label>
           <select
             value={selectedUserId}
             onChange={e => setSelectedUserId(e.target.value)}
-            disabled={loadingUsers || filteredUsers.length === 0}
+            disabled={loadingUsers || sortedUsers.length === 0}
             className={INPUT_CLASS + ' mb-3 appearance-none cursor-pointer'}
             style={{ backgroundImage: 'none' }}
           >
             {loadingUsers && <option value="">Loading users…</option>}
-            {!loadingUsers && filteredUsers.length === 0 && <option value="">No users available</option>}
-            {filteredUsers.map(u => (
+            {!loadingUsers && sortedUsers.length === 0 && <option value="">No users available</option>}
+            {sortedUsers.map(u => (
               <option key={u.id} value={String(u.id)}>
-                {u.name} · {ROLE_LABELS[u.role]} ({u.organizationName ?? 'Unassigned'})
+                {u.name} · {ROLE_LABELS[u.role]} ({describeUserOrganizations(u)})
               </option>
             ))}
           </select>
+
+          {!loadingUsers && sortedUsers.length > 0 && (
+            <p className="text-xs text-[#64748B] dark:text-[#94A3B8] mb-4">
+              Users can switch organizations after sign-in if they belong to more than one.
+            </p>
+          )}
 
           <button
             onClick={handleSelectSignIn}

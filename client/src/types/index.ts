@@ -1,16 +1,32 @@
 export type UserRole = 'super_admin' | 'administrator' | 'team_manager' | 'reviewer' | 'user'
+export type MembershipRole = Exclude<UserRole, 'super_admin'>
+
+export interface UserOrganizationMembership {
+  organizationId: number
+  organizationName: string
+  organizationSlug: string | null
+  organizationDescription?: string | null
+  role: MembershipRole
+  isDefault: boolean
+}
 
 export interface User {
   id: number
   name: string
   email: string
   role: UserRole
+  systemRole?: UserRole
+  activeOrganizationId: number | null
+  activeOrganizationName: string | null
+  activeOrganizationSlug: string | null
+  activeOrganizationDescription?: string | null
   organizationId: number | null
   organizationName: string | null
   organizationSlug: string | null
   organizationDescription?: string | null
   organization?: string
   createdAt: string
+  organizations: UserOrganizationMembership[]
 }
 
 export interface Organization {

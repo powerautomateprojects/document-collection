@@ -224,6 +224,13 @@ router.delete('/:id', authenticateToken, (req: Request, res: Response) => {
     return
   }
 
+  const body = req.body as { confirmationText?: unknown }
+  const confirmationText = typeof body.confirmationText === 'string' ? body.confirmationText.trim() : ''
+  if (confirmationText !== 'DELETE') {
+    res.status(400).json({ error: 'Type DELETE to confirm organization removal' })
+    return
+  }
+
   const id = parseInt(req.params.id, 10)
   if (Number.isNaN(id)) {
     res.status(400).json({ error: 'Invalid organization ID' })
@@ -251,18 +258,18 @@ router.delete('/:id', authenticateToken, (req: Request, res: Response) => {
     .prepare('SELECT COUNT(*) AS count FROM categories WHERE organization_id = ?')
     .get(id) as unknown as { count: number }
 
-  if (categoryRef.count > 0) {
-    res.status(409).json({ error: 'Delete all categories assigned to this organization before deleting it.' })
-    return
-  }
-
   if (userRef.count > 0 || collectionRef.count > 0) {
     res.status(409).json({ error: 'Organization cannot be deleted while users or collections are assigned to it' })
     return
   }
 
   try {
-    db.prepare('DELETE FROM organizations WHERE id = ?').run(id)
+    db.transaction(() => {
+      if (categoryRef.count > 0) {
+        db.prepare('DELETE FROM categories WHERE organization_id = ?').run(id)
+      }
+      db.prepare('DELETE FROM organizations WHERE id = ?').run(id)
+    })()
     res.status(204).end()
   } catch (err) {
     console.error('[organizations] delete:', err)

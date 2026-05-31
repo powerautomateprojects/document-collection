@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Bell, Building2, ChevronDown, ChevronRight, Code2, Database, ExternalLink, GripVertical, Mail, MapPin, MessageSquare, Pencil, Plus, Save, Tag, Trash2, Users, X } from 'lucide-react'
 import {
   DndContext,
@@ -39,7 +39,7 @@ import { listUsers, createUser, deleteUser, updateUser, sendInvite, type AppUser
 import { getUserLocations, updateUserLocations, listLocations, createLocation, deleteLocation, updateLocation } from '../api/locations'
 import { LocationTypeahead } from '../components/common/LocationTypeahead'
 import { useAuth } from '../contexts/AuthContext'
-import type { Category, Collection, Location, Organization } from '../types'
+import type { Category, Collection, Location, MembershipRole, Organization } from '../types'
 import { getCategoryColorClasses } from '../utils/categoryColors'
 
 const INPUT =
@@ -198,6 +198,103 @@ function formatRoleLabel(role: AppUser['role']): string {
   return role
 }
 
+type EditableMembership = {
+  organizationId: string
+  role: MembershipRole
+  isDefault: boolean
+}
+
+function createEditableMembership(role: MembershipRole = 'user'): EditableMembership {
+  return {
+    organizationId: '',
+    role,
+    isDefault: true,
+  }
+}
+
+function normalizeEditableMemberships(entries: EditableMembership[]): EditableMembership[] {
+  const filtered = entries.filter(entry => entry.organizationId)
+  if (filtered.length === 0) {
+    return entries.length > 0 ? [{ ...entries[0], isDefault: true }] : []
+  }
+
+  let sawDefault = false
+  return entries.map(entry => {
+    if (!entry.organizationId) {
+      return { ...entry, isDefault: false }
+    }
+
+    if (entry.isDefault && !sawDefault) {
+      sawDefault = true
+      return entry
+    }
+
+    const isFirstFilled = !sawDefault && filtered[0].organizationId === entry.organizationId && filtered[0].role === entry.role && filtered[0].isDefault === entry.isDefault
+    if (isFirstFilled) {
+      sawDefault = true
+      return { ...entry, isDefault: true }
+    }
+
+    return { ...entry, isDefault: false }
+  })
+}
+
+function buildMembershipPayload(entries: EditableMembership[]): { organizationId: number; role: MembershipRole; isDefault: boolean }[] {
+  const seen = new Set<number>()
+  const normalized = normalizeEditableMemberships(entries)
+  const memberships: { organizationId: number; role: MembershipRole; isDefault: boolean }[] = []
+
+  for (const entry of normalized) {
+    const organizationId = Number.parseInt(entry.organizationId, 10)
+    if (!Number.isInteger(organizationId) || seen.has(organizationId)) {
+      continue
+    }
+    seen.add(organizationId)
+    memberships.push({
+      organizationId,
+      role: entry.role,
+      isDefault: entry.isDefault,
+    })
+  }
+
+  if (memberships.length > 0 && !memberships.some(entry => entry.isDefault)) {
+    memberships[0].isDefault = true
+  }
+
+  return memberships
+}
+
+function organizationDisplayLabel(org: { name: string; description: string | null }) {
+  return org.description?.trim() ? `${org.description} (${org.name})` : org.name
+}
+
+function summarizeUserMemberships(user: AppUser): string[] {
+  if (user.organizations.length === 0) {
+    return [user.organizationName ?? user.organization ?? 'No organization assigned']
+  }
+
+  return user.organizations.map(org => {
+    const orgLabel = org.organizationDescription?.trim() || org.organizationName
+    const roleLabel = formatRoleLabel(org.role)
+    return `${orgLabel} · ${roleLabel}${org.isDefault ? ' · default' : ''}`
+  })
+}
+
+function getUserAccessSummary(user: AppUser): { label: string; className: string } {
+  const systemRole = user.systemRole ?? user.role
+  if (systemRole === 'super_admin') {
+    return {
+      label: 'super admin',
+      className: getUserRoleBadgeClass('super_admin'),
+    }
+  }
+
+  return {
+    label: 'organization member',
+    className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200',
+  }
+}
+
 export default function SettingsPage() {
   const { user } = useAuth()
   const [categories, setCategories] = useState<Category[]>([])
@@ -229,6 +326,9 @@ export default function SettingsPage() {
   const [editingOrganizationId, setEditingOrganizationId] = useState<number | null>(null)
   const [editingOrganizationName, setEditingOrganizationName] = useState('')
   const [editingOrganizationDescription, setEditingOrganizationDescription] = useState('')
+    const [organizationDeleteTarget, setOrganizationDeleteTarget] = useState<Organization | null>(null)
+    const [organizationDeleteConfirmation, setOrganizationDeleteConfirmation] = useState('')
+    const [organizationDeleteSaving, setOrganizationDeleteSaving] = useState(false)
   const [locationsList, setLocationsList] = useState<Location[]>([])
   const [locationsLoading, setLocationsLoading] = useState(false)
   const [newLocationName, setNewLocationName] = useState('')
@@ -250,8 +350,8 @@ export default function SettingsPage() {
   const [usersLoading, setUsersLoading] = useState(false)
   const [newUserName, setNewUserName] = useState('')
   const [newUserEmail, setNewUserEmail] = useState('')
-  const [newUserRole, setNewUserRole] = useState<'user' | 'reviewer' | 'team_manager' | 'administrator' | 'super_admin'>('user')
-  const [newUserOrganizationId, setNewUserOrganizationId] = useState('')
+  const [newUserRole, setNewUserRole] = useState<'user' | 'super_admin'>('user')
+  const [newUserMemberships, setNewUserMemberships] = useState<EditableMembership[]>([createEditableMembership()])
   const [userCreateSaving, setUserCreateSaving] = useState(false)
   const [userCreateError, setUserCreateError] = useState<string | null>(null)
   const [userCreateSuccess, setUserCreateSuccess] = useState<number | null>(null)
@@ -267,8 +367,8 @@ export default function SettingsPage() {
   const [editingUserId, setEditingUserId] = useState<number | null>(null)
   const [editingUserName, setEditingUserName] = useState('')
   const [editingUserEmail, setEditingUserEmail] = useState('')
-  const [editingUserRole, setEditingUserRole] = useState<'user' | 'reviewer' | 'team_manager' | 'administrator' | 'super_admin'>('user')
-  const [editingUserOrganizationId, setEditingUserOrganizationId] = useState('')
+  const [editingUserRole, setEditingUserRole] = useState<'user' | 'super_admin'>('user')
+  const [editingUserMemberships, setEditingUserMemberships] = useState<EditableMembership[]>([])
   const [userEditSaving, setUserEditSaving] = useState(false)
   const [userEditError, setUserEditError] = useState<string | null>(null)
   const [editingUserLocations, setEditingUserLocations] = useState<Location[]>([])
@@ -465,19 +565,29 @@ export default function SettingsPage() {
   async function handleCreateUser() {
     const name = newUserName.trim()
     const email = newUserEmail.trim()
-    const organizationId = parseInt(newUserOrganizationId, 10)
-    if (!name || !email || !Number.isInteger(organizationId)) return
+    const memberships = buildMembershipPayload(newUserMemberships)
+    const isSuperAdmin = newUserRole === 'super_admin'
+    if (!name || !email) return
+    if (!isSuperAdmin && memberships.length === 0) {
+      setUserCreateError('At least one organization membership is required.')
+      return
+    }
     setUserCreateSaving(true)
     setUserCreateError(null)
     setUserCreateSuccess(null)
     try {
-      const created = await createUser({ name, email, role: newUserRole, organizationId })
+      const created = await createUser({
+        name,
+        email,
+        role: isSuperAdmin ? 'super_admin' : memberships.find(entry => entry.isDefault)?.role ?? memberships[0].role,
+        memberships: isSuperAdmin ? [] : memberships,
+      })
       setAllUsers(prev => [...prev, created])
       setUserCreateSuccess(created.id)
       setNewUserName('')
       setNewUserEmail('')
-      setNewUserOrganizationId('')
       setNewUserRole('user')
+      setNewUserMemberships([createEditableMembership()])
     } catch (err) {
       setUserCreateError((err as Error).message)
     } finally {
@@ -495,8 +605,8 @@ export default function SettingsPage() {
         setEditingUserId(null)
         setEditingUserName('')
         setEditingUserEmail('')
-        setEditingUserOrganizationId('')
         setEditingUserRole('user')
+        setEditingUserMemberships([])
       }
     } catch (err) {
       setUserDeleteError((err as Error).message)
@@ -540,6 +650,18 @@ export default function SettingsPage() {
     setOrganizationSaveError(null)
   }
 
+    function startOrganizationDelete(org: Organization) {
+      setOrganizationDeleteTarget(org)
+      setOrganizationDeleteConfirmation('')
+      setOrganizationDeleteError(null)
+    }
+
+    function cancelOrganizationDelete() {
+      setOrganizationDeleteTarget(null)
+      setOrganizationDeleteConfirmation('')
+      setOrganizationDeleteError(null)
+    }
+
   async function handleSaveOrganization(id: number) {
     const name = editingOrganizationName.trim()
     if (!name) {
@@ -556,8 +678,21 @@ export default function SettingsPage() {
       })
       setOrganizations(prev => sortOrganizationsByDescription(prev.map(org => (org.id === id ? updated : org))))
       setAllUsers(prev => prev.map(existing => (
-        existing.organizationId === updated.id
-          ? { ...existing, organizationName: updated.name, organization: updated.name }
+        existing.organizationId === updated.id || existing.organizations.some(org => org.organizationId === updated.id)
+          ? {
+              ...existing,
+              organizationName: existing.organizationId === updated.id ? updated.name : existing.organizationName,
+              organization: existing.organizationId === updated.id ? updated.name : existing.organization,
+              organizations: existing.organizations.map(org => (
+                org.organizationId === updated.id
+                  ? {
+                      ...org,
+                      organizationName: updated.name,
+                      organizationDescription: updated.description,
+                    }
+                  : org
+              )),
+            }
           : existing
       )))
       cancelOrganizationEdit()
@@ -570,20 +705,24 @@ export default function SettingsPage() {
 
   async function handleDeleteOrganization(id: number) {
     setOrganizationDeleteError(null)
+      setOrganizationDeleteSaving(true)
     try {
-      await deleteOrganization(id)
+        await deleteOrganization(id, organizationDeleteConfirmation)
       setOrganizations(prev => prev.filter(org => org.id !== id))
-      if (newUserOrganizationId === String(id)) {
-        setNewUserOrganizationId('')
-      }
-      if (editingUserOrganizationId === String(id)) {
-        setEditingUserOrganizationId('')
-      }
+      setNewUserMemberships(prev => normalizeEditableMemberships(prev.map(entry => (
+        entry.organizationId === String(id) ? { ...entry, organizationId: '' } : entry
+      ))))
+      setEditingUserMemberships(prev => normalizeEditableMemberships(prev.map(entry => (
+        entry.organizationId === String(id) ? { ...entry, organizationId: '' } : entry
+      ))))
       if (editingOrganizationId === id) {
         cancelOrganizationEdit()
       }
+      cancelOrganizationDelete()
     } catch (err) {
       setOrganizationDeleteError((err as Error).message)
+    } finally {
+      setOrganizationDeleteSaving(false)
     }
   }
 
@@ -777,8 +916,16 @@ export default function SettingsPage() {
     setEditingUserId(u.id)
     setEditingUserName(u.name)
     setEditingUserEmail(u.email)
-    setEditingUserRole(u.role)
-    setEditingUserOrganizationId(u.organizationId ? String(u.organizationId) : '')
+    setEditingUserRole((u.systemRole ?? u.role) === 'super_admin' ? 'super_admin' : 'user')
+    setEditingUserMemberships(
+      u.organizations.length > 0
+        ? normalizeEditableMemberships(u.organizations.map(org => ({
+            organizationId: String(org.organizationId),
+            role: org.role,
+            isDefault: org.isDefault,
+          })))
+        : [createEditableMembership()]
+    )
     setUserEditError(null)
     setUserDeleteError(null)
     setEditingUserLocations([])
@@ -795,8 +942,8 @@ export default function SettingsPage() {
     setEditingUserId(null)
     setEditingUserName('')
     setEditingUserEmail('')
-    setEditingUserOrganizationId('')
     setEditingUserRole('user')
+    setEditingUserMemberships([])
     setUserEditError(null)
     setEditingUserLocations([])
   }
@@ -804,13 +951,14 @@ export default function SettingsPage() {
   async function handleSaveUser(id: number) {
     const name = editingUserName.trim()
     const email = editingUserEmail.trim()
-    const organizationId = parseInt(editingUserOrganizationId, 10)
+    const memberships = buildMembershipPayload(editingUserMemberships)
+    const isSuperAdmin = editingUserRole === 'super_admin'
     if (!name || !email) {
       setUserEditError('Name and email are required.')
       return
     }
-    if (!Number.isInteger(organizationId)) {
-      setUserEditError('Organization is required.')
+    if (!isSuperAdmin && memberships.length === 0) {
+      setUserEditError('At least one organization membership is required.')
       return
     }
 
@@ -820,10 +968,11 @@ export default function SettingsPage() {
       const updated = await updateUser(id, {
         name,
         email,
-        role: editingUserRole,
-        organizationId,
+        role: isSuperAdmin ? 'super_admin' : memberships.find(entry => entry.isDefault)?.role ?? memberships[0].role,
+        memberships: isSuperAdmin ? [] : memberships,
       })
-      if (editingUserRole === 'reviewer') {
+      const reviewerMembership = memberships.some(entry => entry.role === 'reviewer')
+      if (!isSuperAdmin && reviewerMembership) {
         await updateUserLocations(id, editingUserLocations.map(l => l.id))
       }
       setAllUsers(prev => prev.map(u => (u.id === id ? updated : u)))
@@ -962,6 +1111,86 @@ export default function SettingsPage() {
 
   const selectedSeedCollection = seedCollections.find(collection => String(collection.id) === seedCollectionId) ?? null
   const organizationOptions = organizations.filter(org => org.isActive)
+  const editingUser = editingUserId == null ? null : allUsers.find(existingUser => existingUser.id === editingUserId) ?? null
+
+  const renderMembershipEditor = (
+    memberships: EditableMembership[],
+    setMemberships: React.Dispatch<React.SetStateAction<EditableMembership[]>>,
+    isDisabled: boolean,
+  ) => (
+    <div className="space-y-2">
+      {memberships.map((membership, index) => (
+        <div key={`${membership.organizationId}-${index}`} className="grid grid-cols-1 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto_auto] gap-2 rounded border border-[#E2E8F0] dark:border-[#334155] p-3">
+          <select
+            value={membership.organizationId}
+            onChange={e => {
+              const next = memberships.map((entry, entryIndex) => (
+                entryIndex === index ? { ...entry, organizationId: e.target.value } : entry
+              ))
+              setMemberships(normalizeEditableMemberships(next))
+            }}
+            disabled={isDisabled}
+            className={INPUT}
+          >
+            <option value="">Select organization</option>
+            {organizationOptions.map(org => (
+              <option key={org.id} value={String(org.id)}>{organizationDisplayLabel(org)}</option>
+            ))}
+          </select>
+          <select
+            value={membership.role}
+            onChange={e => {
+              const next = memberships.map((entry, entryIndex) => (
+                entryIndex === index ? { ...entry, role: e.target.value as MembershipRole } : entry
+              ))
+              setMemberships(normalizeEditableMemberships(next))
+            }}
+            disabled={isDisabled}
+            className={INPUT}
+          >
+            <option value="user">User</option>
+            <option value="reviewer">Reviewer</option>
+            <option value="team_manager">Team Manager</option>
+            <option value="administrator">Administrator</option>
+          </select>
+          <button
+            type="button"
+            disabled={isDisabled}
+            onClick={() => {
+              const next = memberships.map((entry, entryIndex) => ({
+                ...entry,
+                isDefault: entryIndex === index,
+              }))
+              setMemberships(normalizeEditableMemberships(next))
+            }}
+            className={`inline-flex items-center justify-center rounded border px-3 py-2 text-xs font-medium transition-colors ${membership.isDefault ? 'border-[#2563EB] bg-[#EFF6FF] text-[#1D4ED8] dark:border-blue-400 dark:bg-blue-950/40 dark:text-blue-300' : 'border-[#CBD5E1] dark:border-[#334155] text-[#64748B] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]'}`}
+          >
+            Default
+          </button>
+          <button
+            type="button"
+            disabled={isDisabled || memberships.length === 1}
+            onClick={() => {
+              const next = memberships.filter((_, entryIndex) => entryIndex !== index)
+              setMemberships(normalizeEditableMemberships(next.length > 0 ? next : [createEditableMembership()]))
+            }}
+            className="inline-flex items-center justify-center rounded border border-[#FCA5A5] px-3 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-40 dark:border-red-900/50 dark:text-red-300 dark:hover:bg-red-950/40"
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        disabled={isDisabled}
+        onClick={() => setMemberships(prev => [...normalizeEditableMemberships(prev), { ...createEditableMembership(), isDefault: false }])}
+        className="inline-flex items-center gap-1.5 text-sm font-medium text-[#2563EB] hover:text-blue-700 disabled:opacity-50"
+      >
+        <Plus size={14} />
+        Add membership
+      </button>
+    </div>
+  )
 
   function renderPanel(id: PanelId): React.ReactNode {
     switch (id) {
@@ -1616,6 +1845,7 @@ export default function SettingsPage() {
       </section>
       )
       case 'organizations': return user?.role !== 'super_admin' ? null : (
+      <>
       <section className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
         <button
           type="button"
@@ -1728,7 +1958,7 @@ export default function SettingsPage() {
                               </button>
                             )}
                             {!isEditing && (
-                              <button type="button" onClick={() => void handleDeleteOrganization(org.id)} className="text-[#94A3B8] hover:text-red-500 transition-colors" title={`Delete ${org.name}`}>
+                              <button type="button" onClick={() => startOrganizationDelete(org)} className="text-[#94A3B8] hover:text-red-500 transition-colors" title={`Delete ${org.name}`}>
                                 <Trash2 size={14} />
                               </button>
                             )}
@@ -1782,7 +2012,7 @@ export default function SettingsPage() {
                           </button>
                         )}
                         {!isEditing && (
-                          <button type="button" onClick={() => void handleDeleteOrganization(org.id)} className="inline-flex items-center gap-1 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-xs font-medium px-2.5 py-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                          <button type="button" onClick={() => startOrganizationDelete(org)} className="inline-flex items-center gap-1 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-xs font-medium px-2.5 py-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
                             <Trash2 size={12} />
                             Delete
                           </button>
@@ -1796,6 +2026,93 @@ export default function SettingsPage() {
           </div>
         )}
       </section>
+      {organizationDeleteTarget && (
+        <div className="fixed inset-0 z-50">
+          <button
+            type="button"
+            aria-label="Close organization deletion panel"
+            onClick={cancelOrganizationDelete}
+            className="absolute inset-0 bg-slate-950/35"
+          />
+          <aside className="absolute right-0 top-0 h-full w-full max-w-xl bg-white dark:bg-[#0F172A] border-l border-[#E2E8F0] dark:border-[#334155] shadow-2xl flex flex-col">
+            <div className="px-5 py-4 border-b border-[#E2E8F0] dark:border-[#334155] flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-medium uppercase tracking-[0.18em] text-red-500">Danger Zone</div>
+                <h2 className="mt-2 text-lg font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Delete {organizationDeleteTarget.name}</h2>
+                <p className="mt-1 text-sm text-[#64748B] dark:text-[#94A3B8]">
+                  This removes the organization and automatically deletes categories assigned to it.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={cancelOrganizationDelete}
+                className="w-9 h-9 rounded-md flex items-center justify-center text-[#64748B] hover:text-[#1E293B] hover:bg-[#F8FAFC] dark:hover:bg-[#1E293B] dark:hover:text-[#F1F5F9] transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+              {organizationDeleteError && (
+                <div className="rounded border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-sm text-red-600 dark:text-red-300">
+                  {organizationDeleteError}
+                </div>
+              )}
+
+              <div className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#111827] p-4 space-y-2 text-sm text-[#475569] dark:text-[#CBD5E1]">
+                <p><strong>Organization:</strong> {organizationDeleteTarget.description?.trim() ? `${organizationDeleteTarget.description} (${organizationDeleteTarget.name})` : organizationDeleteTarget.name}</p>
+                <p><strong>Users assigned:</strong> {organizationDeleteTarget.userCount ?? 0}</p>
+                <p><strong>Collections assigned:</strong> {organizationDeleteTarget.collectionCount ?? 0}</p>
+                <p><strong>Categories assigned:</strong> These will be deleted automatically with the organization.</p>
+              </div>
+
+              {(organizationDeleteTarget.userCount ?? 0) > 0 || (organizationDeleteTarget.collectionCount ?? 0) > 0 ? (
+                <div className="rounded border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+                  Remove or reassign all users and collections before deleting this organization.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-sm text-[#475569] dark:text-[#CBD5E1]">
+                    Are you sure? If so, type <span className="font-semibold">DELETE</span> below.
+                  </p>
+                  <input
+                    type="text"
+                    value={organizationDeleteConfirmation}
+                    onChange={e => setOrganizationDeleteConfirmation(e.target.value)}
+                    placeholder="DELETE"
+                    className={INPUT}
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-4 border-t border-[#E2E8F0] dark:border-[#334155] flex items-center justify-between gap-3">
+              <div className="text-xs text-[#94A3B8]">This action cannot be undone.</div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={cancelOrganizationDelete}
+                  disabled={organizationDeleteSaving}
+                  className="inline-flex items-center gap-1.5 border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-sm font-medium px-3 py-2 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors disabled:opacity-50"
+                >
+                  <X size={14} />
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteOrganization(organizationDeleteTarget.id)}
+                  disabled={organizationDeleteSaving || (organizationDeleteTarget.userCount ?? 0) > 0 || (organizationDeleteTarget.collectionCount ?? 0) > 0 || organizationDeleteConfirmation.trim() !== 'DELETE'}
+                  className="inline-flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+                >
+                  <Trash2 size={14} />
+                  {organizationDeleteSaving ? 'Deleting…' : 'Delete Organization'}
+                </button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
+      </>
       )
       case 'locations': return (user?.role !== 'super_admin' && user?.role !== 'administrator') ? null : (
         <section className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
@@ -2026,6 +2343,7 @@ export default function SettingsPage() {
         </section>
       )
       case 'users': return (
+        <>
         <section className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
           <button
             type="button"
@@ -2159,40 +2477,32 @@ export default function SettingsPage() {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Role</label>
+                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Access</label>
                     <select
                       value={newUserRole}
                       onChange={e => setNewUserRole(e.target.value as typeof newUserRole)}
                       className={INPUT}
                     >
-                      <option value="user">User</option>
-                      <option value="reviewer">Reviewer</option>
-                      <option value="team_manager">Team Manager</option>
-                      <option value="administrator">Administrator</option>
+                      <option value="user">Organization Member</option>
                       {user?.role === 'super_admin' && (
                         <option value="super_admin">Super Admin</option>
                       )}
                     </select>
                   </div>
-                  <div>
-                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Organization <span className="text-red-500">*</span></label>
-                    <select
-                      value={newUserOrganizationId}
-                      onChange={e => setNewUserOrganizationId(e.target.value)}
-                      className={INPUT}
-                    >
-                      <option value="">Select organization</option>
-                      {organizationOptions.map(org => (
-                        <option key={org.id} value={String(org.id)}>{org.name}</option>
-                      ))}
-                    </select>
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">
+                      Memberships{newUserRole !== 'super_admin' && <span className="text-red-500"> *</span>}
+                    </label>
+                    {newUserRole === 'super_admin' ? (
+                      <p className="text-sm text-[#64748B] dark:text-[#94A3B8]">Super admins have global access and do not need organization memberships.</p>
+                    ) : renderMembershipEditor(newUserMemberships, setNewUserMemberships, userCreateSaving)}
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
                     onClick={() => void handleCreateUser()}
-                    disabled={userCreateSaving || !newUserName.trim() || !newUserEmail.trim() || !newUserOrganizationId}
+                    disabled={userCreateSaving || !newUserName.trim() || !newUserEmail.trim()}
                     className="inline-flex items-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
                   >
                     <Users size={14} />
@@ -2236,8 +2546,7 @@ export default function SettingsPage() {
                         <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide w-12">ID</th>
                         <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide">Name</th>
                         <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide">Email</th>
-                        <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide">Role</th>
-                        <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide">Organization</th>
+                        <th className="px-4 py-2.5 text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide">Access</th>
                         <th className="px-4 py-2.5 w-[170px]"></th>
                       </tr>
                     </thead>
@@ -2245,108 +2554,33 @@ export default function SettingsPage() {
                       {allUsers.map(u => {
                         const isEditing = editingUserId === u.id
                         return (
-                          <Fragment key={u.id}>
-                          <tr className={`${u.id === user?.id ? 'bg-blue-50 dark:bg-blue-900/10' : ''}`}>
+                          <tr key={u.id} className={`${u.id === user?.id ? 'bg-blue-50 dark:bg-blue-900/10' : ''} ${isEditing ? 'bg-slate-50 dark:bg-slate-800/50' : ''}`}>
                             <td className="px-4 py-2.5 text-[#94A3B8] font-mono text-xs">{u.id}</td>
                             <td className="px-4 py-2.5 text-[#1E293B] dark:text-[#F1F5F9] min-w-[180px]">
-                              {isEditing ? (
-                                <input
-                                  type="text"
-                                  value={editingUserName}
-                                  onChange={e => setEditingUserName(e.target.value)}
-                                  className={INPUT}
-                                />
-                              ) : (
-                                <>
-                                  {u.name}
-                                  {u.id === user?.id && (
-                                    <span className="ml-1.5 text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">(you)</span>
-                                  )}
-                                </>
+                              {u.name}
+                              {u.id === user?.id && (
+                                <span className="ml-1.5 text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">(you)</span>
                               )}
                             </td>
                             <td className="px-4 py-2.5 text-[#64748B] min-w-[220px]">
-                              {isEditing ? (
-                                <input
-                                  type="email"
-                                  value={editingUserEmail}
-                                  onChange={e => setEditingUserEmail(e.target.value)}
-                                  className={INPUT}
-                                />
-                              ) : (
-                                u.email
-                              )}
+                              {u.email}
                             </td>
                             <td className="px-4 py-2.5 min-w-[170px]">
-                              {isEditing ? (
-                                <select
-                                  value={editingUserRole}
-                                  onChange={e => setEditingUserRole(e.target.value as typeof editingUserRole)}
-                                  className={INPUT}
-                                >
-                                  <option value="user">User</option>
-                                  <option value="reviewer">Reviewer</option>
-                                  <option value="team_manager">Team Manager</option>
-                                  <option value="administrator">Administrator</option>
-                                  {user?.role === 'super_admin' && (
-                                    <option value="super_admin">Super Admin</option>
-                                  )}
-                                </select>
-                              ) : (
-                                <span className={`inline-block text-[11px] font-medium px-2 py-0.5 rounded-[2px] ${getUserRoleBadgeClass(u.role)}`}>
-                                  {formatRoleLabel(u.role)}
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-4 py-2.5 text-[#64748B] min-w-[170px]">
-                              {isEditing ? (
-                                <select
-                                  value={editingUserOrganizationId}
-                                  onChange={e => setEditingUserOrganizationId(e.target.value)}
-                                  className={INPUT}
-                                >
-                                  <option value="">Select organization</option>
-                                  {organizationOptions.map(org => (
-                                    <option key={org.id} value={String(org.id)}>{org.name}</option>
-                                  ))}
-                                </select>
-                              ) : (
-                                u.organizationName ?? u.organization ?? '—'
-                              )}
+                              <span className={`inline-block text-[11px] font-medium px-2 py-0.5 rounded-[2px] ${getUserAccessSummary(u).className}`}>
+                                {getUserAccessSummary(u).label}
+                              </span>
                             </td>
                             <td className="px-4 py-2.5 text-right">
                               <div className="inline-flex items-center gap-2">
-                                {isEditing ? (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => void handleSaveUser(u.id)}
-                                      disabled={userEditSaving || !editingUserName.trim() || !editingUserEmail.trim()}
-                                      className="inline-flex items-center gap-1 border border-[#16A34A] text-[#16A34A] hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50 text-xs font-medium px-2 py-1 rounded transition-colors"
-                                    >
-                                      <Save size={12} />
-                                      Save
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={cancelUserEdit}
-                                      disabled={userEditSaving}
-                                      className="inline-flex items-center gap-1 border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-xs font-medium px-2 py-1 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
-                                    >
-                                      <X size={12} />
-                                      Cancel
-                                    </button>
-                                  </>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => startUserEdit(u)}
-                                    className="text-[#94A3B8] hover:text-[#2563EB] transition-colors"
-                                    title={`Edit ${u.name}`}
-                                  >
-                                    <Pencil size={14} />
-                                  </button>
-                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => startUserEdit(u)}
+                                  className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-medium transition-colors ${isEditing ? 'border-[#2563EB] bg-[#EFF6FF] text-[#2563EB] dark:border-blue-400 dark:bg-blue-950/40 dark:text-blue-300' : 'border-[#CBD5E1] dark:border-[#334155] text-[#64748B] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]'}`}
+                                  title={`Edit ${u.name}`}
+                                >
+                                  <Pencil size={12} />
+                                  {isEditing ? 'Editing' : 'Edit'}
+                                </button>
                                 {u.id !== user?.id && !isEditing && (
                                   <button
                                     type="button"
@@ -2360,53 +2594,11 @@ export default function SettingsPage() {
                               </div>
                             </td>
                           </tr>
-                          {isEditing && editingUserRole === 'reviewer' && (
-                            <tr>
-                              <td colSpan={6} className="px-4 pb-3 bg-teal-50 dark:bg-teal-900/10 border-t border-teal-100 dark:border-teal-900/30">
-                                <div className="space-y-1.5">
-                                  <p className="text-xs font-medium text-[#475569] dark:text-[#94A3B8]">Assigned Locations</p>
-                                  {editingUserLocationsLoading ? (
-                                    <p className="text-xs text-[#94A3B8] italic">Loading…</p>
-                                  ) : (
-                                    <div className="flex flex-wrap gap-1.5 mb-1.5">
-                                      {editingUserLocations.map(loc => (
-                                        <span key={loc.id} className="inline-flex items-center gap-1 bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-xs px-2 py-0.5 rounded">
-                                          {loc.name}
-                                          <button
-                                            type="button"
-                                            onClick={() => setEditingUserLocations(prev => prev.filter(l => l.id !== loc.id))}
-                                            className="hover:text-teal-900 dark:hover:text-teal-100"
-                                          >
-                                            <X size={10} />
-                                          </button>
-                                        </span>
-                                      ))}
-                                      {editingUserLocations.length === 0 && (
-                                        <span className="text-xs text-[#94A3B8] italic">No locations assigned</span>
-                                      )}
-                                    </div>
-                                  )}
-                                  <div className="max-w-xs">
-                                    <LocationTypeahead
-                                      value={null}
-                                      onChange={loc => {
-                                        if (loc && !editingUserLocations.find(l => l.id === loc.id)) {
-                                          setEditingUserLocations(prev => [...prev, loc])
-                                        }
-                                      }}
-                                      placeholder="Add location…"
-                                    />
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                          </Fragment>
                         )
                       })}
                       {allUsers.length === 0 && !usersLoading && (
                         <tr>
-                          <td colSpan={6} className="px-4 py-6 text-center text-sm text-[#94A3B8] italic">No users found.</td>
+                          <td colSpan={5} className="px-4 py-6 text-center text-sm text-[#94A3B8] italic">No users found.</td>
                         </tr>
                       )}
                     </tbody>
@@ -2428,126 +2620,30 @@ export default function SettingsPage() {
                               </p>
                             </div>
                             {!isEditing && (
-                              <span className={`inline-block text-[11px] font-medium px-2 py-0.5 rounded-[2px] ${getUserRoleBadgeClass(u.role)}`}>
-                                {formatRoleLabel(u.role)}
+                              <span className={`inline-block text-[11px] font-medium px-2 py-0.5 rounded-[2px] ${getUserAccessSummary(u).className}`}>
+                                {getUserAccessSummary(u).label}
                               </span>
                             )}
                           </div>
 
-                          {isEditing ? (
-                            <div className="space-y-2">
-                              <input
-                                type="text"
-                                value={editingUserName}
-                                onChange={e => setEditingUserName(e.target.value)}
-                                placeholder="Name"
-                                className={INPUT}
-                              />
-                              <input
-                                type="email"
-                                value={editingUserEmail}
-                                onChange={e => setEditingUserEmail(e.target.value)}
-                                placeholder="Email"
-                                className={INPUT}
-                              />
-                              <select
-                                value={editingUserRole}
-                                onChange={e => setEditingUserRole(e.target.value as typeof editingUserRole)}
-                                className={INPUT}
-                              >
-                                <option value="user">User</option>
-                                <option value="reviewer">Reviewer</option>
-                                <option value="team_manager">Team Manager</option>
-                                <option value="administrator">Administrator</option>
-                                {user?.role === 'super_admin' && (
-                                  <option value="super_admin">Super Admin</option>
-                                )}
-                              </select>
-                              <select
-                                value={editingUserOrganizationId}
-                                onChange={e => setEditingUserOrganizationId(e.target.value)}
-                                className={INPUT}
-                              >
-                                <option value="">Select organization</option>
-                                {organizationOptions.map(org => (
-                                  <option key={org.id} value={String(org.id)}>{org.name}</option>
-                                ))}
-                              </select>
-                              {editingUserRole === 'reviewer' && (
-                                <div className="space-y-1.5 pt-1">
-                                  <p className="text-xs font-medium text-[#475569] dark:text-[#94A3B8]">Assigned Locations</p>
-                                  {editingUserLocationsLoading ? (
-                                    <p className="text-xs text-[#94A3B8] italic">Loading…</p>
-                                  ) : (
-                                    <div className="flex flex-wrap gap-1.5 mb-1.5">
-                                      {editingUserLocations.map(loc => (
-                                        <span key={loc.id} className="inline-flex items-center gap-1 bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-xs px-2 py-0.5 rounded">
-                                          {loc.name}
-                                          <button
-                                            type="button"
-                                            onClick={() => setEditingUserLocations(prev => prev.filter(l => l.id !== loc.id))}
-                                            className="hover:text-teal-900 dark:hover:text-teal-100"
-                                          >
-                                            <X size={10} />
-                                          </button>
-                                        </span>
-                                      ))}
-                                      {editingUserLocations.length === 0 && (
-                                        <span className="text-xs text-[#94A3B8] italic">No locations assigned</span>
-                                      )}
-                                    </div>
-                                  )}
-                                  <LocationTypeahead
-                                    value={null}
-                                    onChange={loc => {
-                                      if (loc && !editingUserLocations.find(l => l.id === loc.id)) {
-                                        setEditingUserLocations(prev => [...prev, loc])
-                                      }
-                                    }}
-                                    placeholder="Add location…"
-                                  />
-                                </div>
-                              )}
+                          <div className="space-y-2 text-sm text-[#64748B]">
+                            <p>{u.email}</p>
+                            <div className="space-y-1">
+                              {summarizeUserMemberships(u).map(summary => (
+                                <p key={summary}>{summary}</p>
+                              ))}
                             </div>
-                          ) : (
-                            <div className="space-y-1 text-sm text-[#64748B]">
-                              <p>{u.email}</p>
-                              <p>Organization: {u.organizationName ?? u.organization ?? '—'}</p>
-                            </div>
-                          )}
+                          </div>
 
                           <div className="flex items-center gap-2">
-                            {isEditing ? (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => void handleSaveUser(u.id)}
-                                  disabled={userEditSaving || !editingUserName.trim() || !editingUserEmail.trim()}
-                                  className="inline-flex items-center gap-1 border border-[#16A34A] text-[#16A34A] hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50 text-xs font-medium px-2.5 py-1.5 rounded transition-colors"
-                                >
-                                  <Save size={12} />
-                                  Save
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={cancelUserEdit}
-                                  disabled={userEditSaving}
-                                  className="inline-flex items-center gap-1 border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-xs font-medium px-2.5 py-1.5 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
-                                >
-                                  <X size={12} />
-                                  Cancel
-                                </button>
-                              </>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => startUserEdit(u)}
-                                className="inline-flex items-center gap-1 border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-xs font-medium px-2.5 py-1.5 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
-                              >
-                                <Pencil size={12} />
-                                Edit
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => startUserEdit(u)}
+                              className={`inline-flex items-center gap-1 border text-xs font-medium px-2.5 py-1.5 rounded transition-colors ${isEditing ? 'border-[#2563EB] bg-[#EFF6FF] text-[#2563EB] dark:border-blue-400 dark:bg-blue-950/40 dark:text-blue-300' : 'border-[#CBD5E1] dark:border-[#334155] text-[#64748B] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]'}`}
+                            >
+                              <Pencil size={12} />
+                              {isEditing ? 'Editing' : 'Edit'}
+                            </button>
 
                             {u.id !== user?.id && !isEditing && (
                               <button
@@ -2575,6 +2671,152 @@ export default function SettingsPage() {
             </div>
           )}
         </section>
+        {editingUser && (
+          <div className="fixed inset-0 z-50">
+            <button
+              type="button"
+              aria-label="Close user editor"
+              onClick={cancelUserEdit}
+              className="absolute inset-0 bg-slate-950/35"
+            />
+            <aside className="absolute right-0 top-0 h-full w-full max-w-2xl bg-white dark:bg-[#0F172A] border-l border-[#E2E8F0] dark:border-[#334155] shadow-2xl flex flex-col">
+              <div className="px-5 py-4 border-b border-[#E2E8F0] dark:border-[#334155] flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-[#94A3B8]">
+                    <Users size={13} />
+                    User Editor
+                  </div>
+                  <h2 className="mt-2 text-lg font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{editingUserName || editingUser.name}</h2>
+                  <p className="mt-1 text-sm text-[#64748B] dark:text-[#94A3B8]">User ID {editingUser.id}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={cancelUserEdit}
+                  className="w-9 h-9 rounded-md flex items-center justify-center text-[#64748B] hover:text-[#1E293B] hover:bg-[#F8FAFC] dark:hover:bg-[#1E293B] dark:hover:text-[#F1F5F9] transition-colors"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-5 py-5 space-y-6">
+                {userEditError && (
+                  <div className="rounded border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-sm text-red-600 dark:text-red-300">
+                    {userEditError}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Name <span className="text-red-500">*</span></label>
+                    <input
+                      type="text"
+                      value={editingUserName}
+                      onChange={e => setEditingUserName(e.target.value)}
+                      className={INPUT}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Email <span className="text-red-500">*</span></label>
+                    <input
+                      type="email"
+                      value={editingUserEmail}
+                      onChange={e => setEditingUserEmail(e.target.value)}
+                      className={INPUT}
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Access</label>
+                    <select
+                      value={editingUserRole}
+                      onChange={e => setEditingUserRole(e.target.value as typeof editingUserRole)}
+                      className={INPUT}
+                    >
+                      <option value="user">Organization Member</option>
+                      {user?.role === 'super_admin' && (
+                        <option value="super_admin">Super Admin</option>
+                      )}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Memberships</label>
+                  {editingUserRole === 'super_admin' ? (
+                    <p className="text-sm text-[#64748B] dark:text-[#94A3B8]">Global access only.</p>
+                  ) : (
+                    renderMembershipEditor(editingUserMemberships, setEditingUserMemberships, userEditSaving)
+                  )}
+                </div>
+
+                {editingUserMemberships.some(membership => membership.role === 'reviewer') && (
+                  <div className="rounded-lg border border-teal-100 dark:border-teal-900/30 bg-teal-50 dark:bg-teal-900/10 p-4 space-y-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Assigned Locations</h3>
+                      <p className="mt-1 text-xs text-[#64748B] dark:text-[#94A3B8]">Reviewer memberships can be limited to specific locations.</p>
+                    </div>
+                    {editingUserLocationsLoading ? (
+                      <p className="text-xs text-[#94A3B8] italic">Loading…</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5">
+                        {editingUserLocations.map(loc => (
+                          <span key={loc.id} className="inline-flex items-center gap-1 bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-xs px-2 py-0.5 rounded">
+                            {loc.name}
+                            <button
+                              type="button"
+                              onClick={() => setEditingUserLocations(prev => prev.filter(l => l.id !== loc.id))}
+                              className="hover:text-teal-900 dark:hover:text-teal-100"
+                            >
+                              <X size={10} />
+                            </button>
+                          </span>
+                        ))}
+                        {editingUserLocations.length === 0 && (
+                          <span className="text-xs text-[#94A3B8] italic">No locations assigned</span>
+                        )}
+                      </div>
+                    )}
+                    <div className="max-w-md">
+                      <LocationTypeahead
+                        value={null}
+                        onChange={loc => {
+                          if (loc && !editingUserLocations.find(existingLocation => existingLocation.id === loc.id)) {
+                            setEditingUserLocations(prev => [...prev, loc])
+                          }
+                        }}
+                        placeholder="Add location…"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-5 py-4 border-t border-[#E2E8F0] dark:border-[#334155] flex items-center justify-between gap-3">
+                <div className="text-xs text-[#94A3B8]">Changes are saved for this user only.</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={cancelUserEdit}
+                    disabled={userEditSaving}
+                    className="inline-flex items-center gap-1.5 border border-[#CBD5E1] dark:border-[#334155] text-[#64748B] text-sm font-medium px-3 py-2 rounded hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors disabled:opacity-50"
+                  >
+                    <X size={14} />
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveUser(editingUser.id)}
+                    disabled={userEditSaving || !editingUserName.trim() || !editingUserEmail.trim()}
+                    className="inline-flex items-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+                  >
+                    <Save size={14} />
+                    {userEditSaving ? 'Saving…' : 'Save User'}
+                  </button>
+                </div>
+              </div>
+            </aside>
+          </div>
+        )}
+        </>
       )
       case 'seed': return (
         <section className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">

@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
-import { FileText, CheckCircle, AlertTriangle, Inbox, TrendingUp } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { FileText, CheckCircle, AlertTriangle, Inbox, TrendingUp, ArrowRight } from 'lucide-react'
+import { listCollections } from '../api/collections'
 import { getStats, getTrend, type DashboardStats, type TrendData } from '../api/stats'
 import { useAuth } from '../contexts/AuthContext'
 import SubmissionTrendChart from '../components/dashboard/SubmissionTrendChart'
+import type { Collection } from '../types'
 
 export default function DashboardPage() {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const organizationDisplayName = user?.organizationDescription
     ? `${user.organizationDescription} (${user.organizationName})`
     : user?.organizationName
@@ -14,6 +18,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [kpiStats, setKpiStats] = useState<DashboardStats | null>(null)
   const [trendData, setTrendData] = useState<TrendData | null>(null)
+  const [collections, setCollections] = useState<Collection[]>([])
 
   useEffect(() => {
     if (isPrivileged) {
@@ -22,9 +27,12 @@ export default function DashboardPage() {
         getTrend().then(setTrendData).catch(() => null),
       ]).finally(() => setLoading(false))
     } else {
-      setLoading(false)
+      listCollections()
+        .then(items => setCollections(items.filter(collection => collection.status === 'published')))
+        .catch(() => null)
+        .finally(() => setLoading(false))
     }
-  }, [])
+  }, [isPrivileged])
 
   if (loading) {
     return (
@@ -91,6 +99,45 @@ export default function DashboardPage() {
       )}
 
       {trendData && <SubmissionTrendChart data={trendData} />}
+
+      {!isPrivileged && (
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Available Forms</h2>
+            <p className="text-sm text-[#64748B] mt-0.5">Forms available in your active organization.</p>
+          </div>
+
+          {collections.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-[#CBD5E1] dark:border-[#334155] bg-white dark:bg-[#1E293B] px-5 py-6 text-sm text-[#64748B] dark:text-[#94A3B8]">
+              No published forms are available in this organization yet.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {collections.map(collection => (
+                <article
+                  key={collection.id}
+                  className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#1E293B] p-5 flex flex-col gap-3"
+                >
+                  <div className="space-y-1">
+                    <h3 className="text-base font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{collection.title}</h3>
+                    <p className="text-sm text-[#64748B] dark:text-[#94A3B8] line-clamp-3">
+                      {collection.description?.trim() || 'No description provided.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/fill/${collection.slug}`)}
+                    className="inline-flex items-center gap-1.5 self-start rounded bg-[#2563EB] px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                  >
+                    Open Form
+                    <ArrowRight size={14} />
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   )
 }

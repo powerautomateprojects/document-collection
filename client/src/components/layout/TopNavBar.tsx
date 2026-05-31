@@ -9,6 +9,7 @@ import {
 } from '../../api/notifications'
 import { useTheme } from '../../contexts/ThemeContext'
 import { useAuth } from '../../contexts/AuthContext'
+import OrganizationTabs from './OrganizationTabs'
 import type { AppNotification, UserRole } from '../../types'
 import { timeAgo } from '../../utils/timeAgo'
 
@@ -115,26 +116,27 @@ export default function TopNavBar({ onAppIconClick }: TopNavBarProps) {
   }
 
   return (
-    <header className="h-[60px] shrink-0 flex items-center justify-between px-4 border-b border-[#E2E8F0] dark:border-[#1E293B] bg-white dark:bg-[#0F172A]">
+    <header className="shrink-0 border-b border-[#E2E8F0] dark:border-[#1E293B] bg-white dark:bg-[#0F172A]">
+      <div className="h-[60px] flex items-center justify-between px-4">
 
-      {/* Left: Logo + Title */}
-      <button
-        type="button"
-        onClick={onAppIconClick}
-        className="flex items-center gap-3"
-        aria-label="Toggle navigation menu"
-      >
-        <Layers size={22} strokeWidth={2} className="text-[#1E293B] dark:text-[#F1F5F9] shrink-0" />
-        <span className="font-semibold text-[17.5px] text-[#1E293B] dark:text-[#F1F5F9] hidden sm:block tracking-tight">
-          Data Collection Pro
-        </span>
-        <span className="font-semibold text-[17.5px] text-[#1E293B] dark:text-[#F1F5F9] sm:hidden font-mono">
-          DCP
-        </span>
-      </button>
+        {/* Left: Logo + Title */}
+        <button
+          type="button"
+          onClick={onAppIconClick}
+          className="flex items-center gap-3"
+          aria-label="Toggle navigation menu"
+        >
+          <Layers size={22} strokeWidth={2} className="text-[#1E293B] dark:text-[#F1F5F9] shrink-0" />
+          <span className="font-semibold text-[17.5px] text-[#1E293B] dark:text-[#F1F5F9] hidden sm:block tracking-tight">
+            Data Collection Pro
+          </span>
+          <span className="font-semibold text-[17.5px] text-[#1E293B] dark:text-[#F1F5F9] sm:hidden font-mono">
+            DCP
+          </span>
+        </button>
 
-      {/* Right: Icon actions */}
-      <div className="flex items-center gap-0.5">
+        {/* Right: Icon actions */}
+        <div className="flex items-center gap-0.5">
 
         {/* Notifications */}
         {user && <div className="relative" ref={notificationsRef}>
@@ -303,7 +305,9 @@ export default function TopNavBar({ onAppIconClick }: TopNavBarProps) {
             </div>
           )}
         </div>
+        </div>
       </div>
+      <OrganizationTabs />
     </header>
   )
 }
