@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express'
 import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { getDb } from '../database/db'
-import { authenticateToken, JWT_SECRET } from '../middleware/auth'
+import { authenticateToken, JWT_SECRET, optionalAuthenticateToken } from '../middleware/auth'
 import { loadRequestUserContext, isAdministrator, canViewResponses, canViewAllResponses, type RequestUserContext } from '../middleware/organizationAccess'
 import { sendNotificationEmail, isEmailDeliveryConfigured } from '../services/notificationEmail'
 
@@ -875,7 +875,7 @@ const COL_SELECT = `
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.get('/public/:slug', (req: Request, res: Response) => {
+router.get('/public/:slug', optionalAuthenticateToken, (req: Request, res: Response) => {
   const db = getDb()
   const previewRequested = req.query.preview === 'true'
   const previewUser = previewRequested ? getPreviewUserContext(req) : null
@@ -891,6 +891,12 @@ router.get('/public/:slug', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Collection not found' })
     return
   }
+
+  if (c.anonymous !== 1 && !req.user) {
+    res.status(401).json({ error: 'Authentication required to access this form' })
+    return
+  }
+
   const [allFields, colsByField] = fetchFields(c.id, c.active_version_id)
   // Strip staff-only fields — the fill page is for submitters, not staff
   const publicFields = allFields.filter(f => !f.staff_only)
@@ -957,7 +963,7 @@ router.get('/public/:slug', (req: Request, res: Response) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.post('/public/:slug/responses', (req: Request, res: Response) => {
+router.post('/public/:slug/responses', optionalAuthenticateToken, (req: Request, res: Response) => {
   const db = getDb()
   const col = db
     .prepare('SELECT id, title, anonymous, status, active_version_id, allow_submission_edits, submission_edit_window_hours FROM collections WHERE slug = ?')
@@ -988,14 +994,27 @@ router.post('/public/:slug/responses', (req: Request, res: Response) => {
     values?: { fieldId: number; value: string }[]
   }
 
-  if (
-    !col.anonymous &&
-    (!body.respondentName?.trim() || !body.respondentEmail?.trim())
-  ) {
-    res
-      .status(400)
-      .json({ error: 'Name and email are required for this collection' })
-    return
+  let authenticatedRespondent: { name: string; email: string } | null = null
+
+  if (!col.anonymous) {
+    if (!req.user) {
+      res.status(401).json({ error: 'Authentication required to submit this form' })
+      return
+    }
+
+    const userRow = db
+      .prepare('SELECT name, email FROM users WHERE id = ?')
+      .get(req.user.sub) as unknown as { name: string | null; email: string | null } | undefined
+
+    if (!userRow?.name?.trim() || !userRow.email?.trim()) {
+      res.status(400).json({ error: 'Your account must have a name and email address before submitting this form' })
+      return
+    }
+
+    authenticatedRespondent = {
+      name: userRow.name.trim(),
+      email: userRow.email.trim(),
+    }
   }
 
   db.exec('BEGIN')
@@ -1018,8 +1037,8 @@ router.post('/public/:slug/responses', (req: Request, res: Response) => {
       .run(
         col.id,
         col.active_version_id,
-        body.respondentName?.trim() ?? null,
-        body.respondentEmail?.trim() ?? null,
+        authenticatedRespondent?.name ?? body.respondentName?.trim() ?? null,
+        authenticatedRespondent?.email ?? body.respondentEmail?.trim() ?? null,
         editableUntil
       )
 
@@ -1037,7 +1056,7 @@ router.post('/public/:slug/responses', (req: Request, res: Response) => {
     db.exec('COMMIT')
 
     // Send confirmation email if the feature is enabled and the respondent provided an email
-    const respondentEmail = body.respondentEmail?.trim()
+    const respondentEmail = authenticatedRespondent?.email ?? body.respondentEmail?.trim()
     if (respondentEmail && isEmailDeliveryConfigured()) {
       const settingRow = db
         .prepare(`SELECT value FROM app_settings WHERE key = 'submission_confirmation_emails'`)
@@ -1047,7 +1066,7 @@ router.post('/public/:slug/responses', (req: Request, res: Response) => {
           to: respondentEmail,
           subject: `Submission received – ${col.title}`,
           text: [
-            `Hi ${body.respondentName?.trim() ?? 'there'},`,
+            `Hi ${authenticatedRespondent?.name ?? body.respondentName?.trim() ?? 'there'},`,
             '',
             `Thank you for your submission to "${col.title}". We have received your response.`,
             '',

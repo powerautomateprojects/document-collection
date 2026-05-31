@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Layers } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { getPublicSetting } from '../api/settings'
@@ -39,7 +39,11 @@ function describeUserOrganizations(user: User) {
 
 export default function LoginPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { signIn } = useAuth()
+  const redirectTo = typeof (location.state as { redirectTo?: unknown } | null)?.redirectTo === 'string'
+    ? (location.state as { redirectTo: string }).redirectTo
+    : '/'
 
   const [existingUsers, setExistingUsers] = useState<User[]>([])
   const [loadingUsers, setLoadingUsers] = useState(true)
@@ -116,7 +120,7 @@ export default function LoginPage() {
       const data = await res.json() as { token: string; user: User; error?: string }
       if (!res.ok) throw new Error(data.error ?? 'Login failed')
       signIn(data.user, data.token)
-      navigate('/')
+      navigate(redirectTo)
     } catch (err) {
       setPwError(err instanceof Error ? err.message : 'Login failed')
     } finally {
@@ -140,7 +144,7 @@ export default function LoginPage() {
       const data = await res.json() as { token: string; user: User; error?: string }
       if (!res.ok) throw new Error(data.error ?? 'Login failed')
       signIn(data.user, data.token)
-      navigate('/')
+      navigate(redirectTo)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed')
     } finally {

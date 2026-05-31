@@ -917,9 +917,19 @@ export default function CollectionFillPage() {
           if (user?.email) setRespEmail(user.email)
         }
       })
-      .catch(err => setError((err as Error).message))
+      .catch(err => {
+        const message = (err as Error).message
+        if (!isPreview && message.toLowerCase().includes('authentication required')) {
+          navigate('/login', {
+            replace: true,
+            state: { redirectTo: `${window.location.pathname}${window.location.search}` },
+          })
+          return
+        }
+        setError(message)
+      })
       .finally(() => setLoading(false))
-  }, [slug, isPreview])
+  }, [slug, isPreview, navigate])
 
   useEffect(() => {
     getPublicSetting('qr_code_enabled')
@@ -981,6 +991,9 @@ export default function CollectionFillPage() {
     () => computeVisibleFields(orderedFields, values),
     [orderedFields, values]
   )
+  const hasAutoIdentity = !collection?.anonymous && !!user?.name?.trim() && !!user?.email?.trim()
+  const effectiveRespondentName = hasAutoIdentity ? user?.name?.trim() ?? '' : respName.trim()
+  const effectiveRespondentEmail = hasAutoIdentity ? user?.email?.trim() ?? '' : respEmail.trim()
 
   const pageNumbers = useMemo(() => {
     const pages = new Set<number>()
@@ -1074,7 +1087,7 @@ export default function CollectionFillPage() {
   }
 
   function getIdentityValidationError(): string | null {
-    if (!editResponseId && !collection?.anonymous && (!respName.trim() || !respEmail.trim())) {
+    if (!editResponseId && !collection?.anonymous && (!effectiveRespondentName || !effectiveRespondentEmail)) {
       return 'Please enter your name and email address.'
     }
     return null
@@ -1151,7 +1164,7 @@ export default function CollectionFillPage() {
     setActiveTab('questions')
 
     if (!collection.anonymous && !editResponseId && currentPageIdx === 0) {
-      if (!respName.trim() || !respEmail.trim()) {
+      if (!effectiveRespondentName || !effectiveRespondentEmail) {
         setPageError('Please enter your name and email before continuing.')
         return
       }
@@ -1244,8 +1257,8 @@ export default function CollectionFillPage() {
         })
       } else {
         await submitResponse(slug, {
-          respondentName: respName.trim() || undefined,
-          respondentEmail: respEmail.trim() || undefined,
+          respondentName: effectiveRespondentName || undefined,
+          respondentEmail: effectiveRespondentEmail || undefined,
           copyEmail: sendCopy && copyEmail.trim() ? copyEmail.trim() : undefined,
           values: Object.entries(values)
             .filter(([fieldId]) => {
@@ -1734,11 +1747,11 @@ export default function CollectionFillPage() {
                     <div className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A] p-4 space-y-2">
                       <div>
                         <p className="text-xs font-semibold uppercase tracking-wide text-[#64748B]">Your Name</p>
-                        <p className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">{respName || 'No response'}</p>
+                        <p className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">{effectiveRespondentName || 'No response'}</p>
                       </div>
                       <div>
                         <p className="text-xs font-semibold uppercase tracking-wide text-[#64748B]">Email Address</p>
-                        <p className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">{respEmail || 'No response'}</p>
+                        <p className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">{effectiveRespondentEmail || 'No response'}</p>
                       </div>
                     </div>
                   )}
@@ -1810,7 +1823,25 @@ export default function CollectionFillPage() {
                   </div>
                   )}
 
-                  {!collection.anonymous && !editResponseId && currentPageIdx === 0 && (
+                  {!collection.anonymous && !editResponseId && currentPageIdx === 0 && hasAutoIdentity && (
+                    <div className="space-y-3 pb-4 border-b border-[#E2E8F0] dark:border-[#334155]">
+                      <div className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A] p-4 space-y-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-[#64748B]">Your Name</p>
+                          <p className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">{effectiveRespondentName}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-[#64748B]">Email Address</p>
+                          <p className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">{effectiveRespondentEmail}</p>
+                        </div>
+                        <p className="text-xs text-[#64748B] dark:text-[#94A3B8]">
+                          Your signed-in identity will be captured automatically with this submission.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {!collection.anonymous && !editResponseId && currentPageIdx === 0 && !hasAutoIdentity && (
                     <div className="space-y-3 pb-4 border-b border-[#E2E8F0] dark:border-[#334155]">
                       <div>
                         <label className={LABEL}>
