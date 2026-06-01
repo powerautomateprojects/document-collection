@@ -1,12 +1,23 @@
 import { Router, type Request, type Response } from 'express'
 import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
+import multer from 'multer'
 import { getDb } from '../database/db'
 import { authenticateToken, JWT_SECRET, optionalAuthenticateToken } from '../middleware/auth'
 import { loadRequestUserContext, isAdministrator, canViewResponses, canViewAllResponses, type RequestUserContext } from '../middleware/organizationAccess'
+import { parseAttachmentValue, stringifyAttachmentValue, type AttachmentReference } from '../lib/attachmentValue'
+import { deleteDriveFile, downloadDriveFile, isGoogleDriveConfigured, uploadBufferToDrive } from '../services/googleDrive'
 import { sendNotificationEmail, isEmailDeliveryConfigured } from '../services/notificationEmail'
 
 const router = Router()
+const attachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+  },
+})
+
+const MAX_ATTACHMENTS_PER_FIELD = 5
 
 function slugifyTitle(title: string): string {
   return title
@@ -130,6 +141,24 @@ interface SeedCollectionBody {
   count?: number
 }
 
+interface DbAttachmentRow {
+  id: number
+  collection_id: number
+  response_id: number | null
+  field_id: number
+  uploaded_by_user_id: number | null
+  temp_upload_token: string | null
+  file_name: string
+  mime_type: string
+  size_bytes: number
+  drive_file_id: string
+  drive_web_view_url: string | null
+  drive_download_url: string | null
+  status: 'uploaded' | 'linked' | 'deleted'
+  respondent_email?: string | null
+  organization_id?: number | null
+}
+
 // ── Request body types ────────────────────────────────────────
 
 interface TableColumnInput {
@@ -152,6 +181,25 @@ interface FieldInput {
   tableColumns?: TableColumnInput[]
   sortOrder?: number
   staffOnly?: boolean
+}
+
+function buildAttachmentDownloadUrl(attachmentId: number): string {
+  return `/api/collections/attachments/${attachmentId}/download`
+}
+
+function sanitizeAttachmentReference(attachment: AttachmentReference): AttachmentReference {
+  return {
+    attachmentId: attachment.attachmentId,
+    fileName: attachment.fileName,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    downloadUrl: attachment.downloadUrl,
+    webViewUrl: attachment.webViewUrl ?? null,
+  }
+}
+
+function sanitizeDownloadFilename(name: string): string {
+  return name.replace(/[\r\n"]/g, '_')
 }
 
 function parseBranchRules(raw: string | null): FieldBranchRule[] | null {
@@ -903,6 +951,273 @@ router.get('/public/:slug', optionalAuthenticateToken, (req: Request, res: Respo
   res.json(toApiCollection(c, publicFields, colsByField))
 })
 
+router.post('/public/:slug/attachments', optionalAuthenticateToken, attachmentUpload.single('file'), async (req: Request, res: Response) => {
+  if (!isGoogleDriveConfigured()) {
+    res.status(503).json({ error: 'Attachment uploads are not configured' })
+    return
+  }
+
+  const db = getDb()
+  const col = db
+    .prepare('SELECT id, anonymous, status, active_version_id FROM collections WHERE slug = ?')
+    .get(req.params.slug) as unknown as {
+      id: number
+      anonymous: number
+      status: 'draft' | 'published'
+      active_version_id: number | null
+    } | undefined
+
+  if (!col || col.status !== 'published') {
+    res.status(404).json({ error: 'Collection not found' })
+    return
+  }
+
+  if (col.anonymous !== 1 && !req.user) {
+    res.status(401).json({ error: 'Authentication required to upload attachments for this form' })
+    return
+  }
+
+  const fieldId = Number.parseInt(String(req.body.fieldId ?? ''), 10)
+  if (!Number.isInteger(fieldId) || fieldId < 1) {
+    res.status(400).json({ error: 'fieldId is required' })
+    return
+  }
+
+  if (!req.file) {
+    res.status(400).json({ error: 'A file is required' })
+    return
+  }
+
+  const [fields] = fetchFields(col.id, col.active_version_id)
+  const attachmentField = fields.find(field => field.id === fieldId && field.type === 'attachment' && !field.staff_only)
+  if (!attachmentField) {
+    res.status(400).json({ error: 'Invalid attachment field' })
+    return
+  }
+
+  const pendingCountRow = db
+    .prepare(`
+      SELECT COUNT(*) AS count
+      FROM response_attachments
+      WHERE collection_id = ?
+        AND field_id = ?
+        AND response_id IS NULL
+        AND status = 'uploaded'
+        AND (
+          (? IS NOT NULL AND uploaded_by_user_id = ?)
+          OR (? IS NULL AND uploaded_by_user_id IS NULL)
+        )
+    `)
+    .get(col.id, fieldId, req.user?.sub ?? null, req.user?.sub ?? null, req.user?.sub ?? null) as { count: number }
+
+  if ((pendingCountRow?.count ?? 0) >= MAX_ATTACHMENTS_PER_FIELD) {
+    res.status(400).json({ error: `You can upload up to ${MAX_ATTACHMENTS_PER_FIELD} attachments for this field` })
+    return
+  }
+
+  const uploadToken = crypto.randomUUID()
+
+  try {
+    const uploaded = await uploadBufferToDrive({
+      fileName: req.file.originalname,
+      mimeType: req.file.mimetype || 'application/octet-stream',
+      buffer: req.file.buffer,
+    })
+
+    const result = db
+      .prepare(`
+        INSERT INTO response_attachments (
+          collection_id,
+          response_id,
+          field_id,
+          uploaded_by_user_id,
+          temp_upload_token,
+          file_name,
+          mime_type,
+          size_bytes,
+          drive_file_id,
+          drive_web_view_url,
+          drive_download_url,
+          status
+        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploaded')
+      `)
+      .run(
+        col.id,
+        fieldId,
+        req.user?.sub ?? null,
+        uploadToken,
+        uploaded.name,
+        uploaded.mimeType,
+        uploaded.sizeBytes,
+        uploaded.id,
+        uploaded.webViewUrl,
+        uploaded.webContentUrl,
+      )
+
+    const attachmentId = Number(result.lastInsertRowid)
+    res.status(201).json({
+      attachmentId,
+      fileName: uploaded.name,
+      mimeType: uploaded.mimeType,
+      sizeBytes: uploaded.sizeBytes,
+      downloadUrl: buildAttachmentDownloadUrl(attachmentId),
+      webViewUrl: uploaded.webViewUrl,
+      uploadToken,
+    })
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message || 'Failed to upload attachment' })
+  }
+})
+
+router.delete('/public/:slug/attachments/:attachmentId', optionalAuthenticateToken, async (req: Request, res: Response) => {
+  const attachmentId = Number.parseInt(req.params.attachmentId, 10)
+  if (!Number.isInteger(attachmentId) || attachmentId < 1) {
+    res.status(400).json({ error: 'Invalid attachment ID' })
+    return
+  }
+
+  const uploadToken = typeof req.body?.uploadToken === 'string'
+    ? req.body.uploadToken.trim()
+    : typeof req.query.uploadToken === 'string'
+      ? req.query.uploadToken.trim()
+      : ''
+  if (!uploadToken) {
+    res.status(400).json({ error: 'uploadToken is required' })
+    return
+  }
+
+  const db = getDb()
+  const col = db
+    .prepare('SELECT id, anonymous, status FROM collections WHERE slug = ?')
+    .get(req.params.slug) as unknown as { id: number; anonymous: number; status: 'draft' | 'published' } | undefined
+
+  if (!col || col.status !== 'published') {
+    res.status(404).json({ error: 'Collection not found' })
+    return
+  }
+
+  if (col.anonymous !== 1 && !req.user) {
+    res.status(401).json({ error: 'Authentication required to manage attachments for this form' })
+    return
+  }
+
+  const attachment = db
+    .prepare(`
+      SELECT id, collection_id, response_id, uploaded_by_user_id, temp_upload_token, drive_file_id, status
+      FROM response_attachments
+      WHERE id = ? AND collection_id = ?
+    `)
+    .get(attachmentId, col.id) as unknown as {
+      id: number
+      collection_id: number
+      response_id: number | null
+      uploaded_by_user_id: number | null
+      temp_upload_token: string | null
+      drive_file_id: string
+      status: 'uploaded' | 'linked' | 'deleted'
+    } | undefined
+
+  if (!attachment || attachment.response_id !== null || attachment.status !== 'uploaded') {
+    res.status(404).json({ error: 'Attachment not found' })
+    return
+  }
+
+  if (attachment.temp_upload_token !== uploadToken) {
+    res.status(403).json({ error: 'Attachment token mismatch' })
+    return
+  }
+
+  if (attachment.uploaded_by_user_id !== (req.user?.sub ?? null)) {
+    res.status(403).json({ error: 'Attachment ownership mismatch' })
+    return
+  }
+
+  try {
+    await deleteDriveFile(attachment.drive_file_id)
+  } catch {
+    // If the Drive file is already gone, continue and clean up the metadata row.
+  }
+
+  db.prepare(`
+    UPDATE response_attachments
+    SET status = 'deleted', deleted_at = datetime('now')
+    WHERE id = ?
+  `).run(attachment.id)
+
+  res.status(204).send()
+})
+
+router.get('/attachments/:attachmentId/download', authenticateToken, async (req: Request, res: Response) => {
+  const attachmentId = Number.parseInt(req.params.attachmentId, 10)
+  if (!Number.isInteger(attachmentId) || attachmentId < 1) {
+    res.status(400).json({ error: 'Invalid attachment ID' })
+    return
+  }
+
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
+  const db = getDb()
+  const attachment = db
+    .prepare(`
+      SELECT
+        ra.id,
+        ra.collection_id,
+        ra.response_id,
+        ra.field_id,
+        ra.uploaded_by_user_id,
+        ra.temp_upload_token,
+        ra.file_name,
+        ra.mime_type,
+        ra.size_bytes,
+        ra.drive_file_id,
+        ra.drive_web_view_url,
+        ra.drive_download_url,
+        ra.status,
+        cr.respondent_email,
+        c.organization_id
+      FROM response_attachments ra
+      JOIN collections c ON c.id = ra.collection_id
+      LEFT JOIN collection_responses cr ON cr.id = ra.response_id
+      WHERE ra.id = ? AND ra.status != 'deleted'
+    `)
+    .get(attachmentId) as unknown as DbAttachmentRow | undefined
+
+  if (!attachment || attachment.response_id === null) {
+    res.status(404).json({ error: 'Attachment not found' })
+    return
+  }
+
+  let permitted = false
+  if (canViewResponses(context)) {
+    permitted = isAdministrator(context) || attachment.organization_id === context.organizationId
+  }
+
+  if (!permitted) {
+    const userRow = db
+      .prepare('SELECT email FROM users WHERE id = ?')
+      .get(context.id) as { email: string } | undefined
+    permitted = !!userRow?.email && userRow.email === attachment.respondent_email && (isAdministrator(context) || attachment.organization_id === context.organizationId)
+  }
+
+  if (!permitted) {
+    res.status(403).json({ error: 'Access denied' })
+    return
+  }
+
+  try {
+    const file = await downloadDriveFile(attachment.drive_file_id)
+    res.setHeader('Content-Type', file.mimeType)
+    res.setHeader('Content-Disposition', `inline; filename="${sanitizeDownloadFilename(file.fileName)}"`)
+    file.stream.pipe(res)
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message || 'Failed to download attachment' })
+  }
+})
+
 /**
  * @swagger
  * /api/collections/public/{slug}/responses:
@@ -1019,6 +1334,9 @@ router.post('/public/:slug/responses', optionalAuthenticateToken, (req: Request,
 
   db.exec('BEGIN')
   try {
+    const [collectionFields] = fetchFields(col.id, col.active_version_id)
+    const fieldById = new Map(collectionFields.map(field => [field.id, field]))
+
     const editWindowHours = col.allow_submission_edits === 1
       ? col.submission_edit_window_hours
       : null
@@ -1046,10 +1364,63 @@ router.post('/public/:slug/responses', optionalAuthenticateToken, (req: Request,
 
     if (body.values?.length) {
       for (const val of body.values) {
+        const field = fieldById.get(val.fieldId)
+        let storedValue = val.value ?? null
+
+        if (field?.type === 'attachment' && val.value) {
+          const attachments = parseAttachmentValue(val.value)
+          if (attachments.length > 0) {
+            const linkedAttachments: AttachmentReference[] = []
+            for (const attachment of attachments) {
+              const uploadToken = (attachment as AttachmentReference & { uploadToken?: string }).uploadToken?.trim() ?? null
+              if (!uploadToken) {
+                throw new Error('Attachment upload token is missing')
+              }
+
+              const attachmentRow = db
+                .prepare(`
+                  SELECT id, collection_id, response_id, field_id, uploaded_by_user_id, temp_upload_token, file_name, mime_type, size_bytes, drive_file_id, drive_web_view_url, drive_download_url, status
+                  FROM response_attachments
+                  WHERE id = ? AND collection_id = ? AND field_id = ? AND status = 'uploaded'
+                `)
+                .get(attachment.attachmentId, col.id, val.fieldId) as unknown as DbAttachmentRow | undefined
+
+              if (!attachmentRow || attachmentRow.response_id !== null) {
+                throw new Error('Uploaded attachment could not be linked to this response')
+              }
+
+              if (attachmentRow.temp_upload_token !== uploadToken) {
+                throw new Error('Uploaded attachment token mismatch')
+              }
+
+              if (attachmentRow.uploaded_by_user_id !== (req.user?.sub ?? null)) {
+                throw new Error('Uploaded attachment ownership mismatch')
+              }
+
+              db.prepare(`
+                UPDATE response_attachments
+                SET response_id = ?, status = 'linked', temp_upload_token = NULL
+                WHERE id = ?
+              `).run(responseId, attachmentRow.id)
+
+              linkedAttachments.push(sanitizeAttachmentReference({
+                attachmentId: attachmentRow.id,
+                fileName: attachmentRow.file_name,
+                mimeType: attachmentRow.mime_type,
+                sizeBytes: attachmentRow.size_bytes,
+                downloadUrl: buildAttachmentDownloadUrl(attachmentRow.id),
+                webViewUrl: attachmentRow.drive_web_view_url,
+              }))
+            }
+
+            storedValue = stringifyAttachmentValue(linkedAttachments)
+          }
+        }
+
         db.prepare(
           `INSERT INTO collection_response_values (response_id, field_id, value)
            VALUES (?, ?, ?)`
-        ).run(responseId, val.fieldId, val.value ?? null)
+        ).run(responseId, val.fieldId, storedValue)
       }
     }
 

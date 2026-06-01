@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FileText, CheckCircle, AlertTriangle, Inbox, TrendingUp, ArrowRight } from 'lucide-react'
 import { listCollections } from '../api/collections'
+import { listMySubmissions, type MySubmission } from '../api/mySubmissions'
 import { getStats, getTrend, type DashboardStats, type TrendData } from '../api/stats'
 import { useAuth } from '../contexts/AuthContext'
 import SubmissionTrendChart from '../components/dashboard/SubmissionTrendChart'
@@ -10,13 +11,12 @@ import type { Collection } from '../types'
 export default function DashboardPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
-  const organizationDisplayName = user?.organizationDescription?.trim() || user?.organizationName
-  const dashboardTitle = organizationDisplayName ? `${organizationDisplayName} Dashboard` : 'Dashboard'
   const isPrivileged = user?.role === 'super_admin' || user?.role === 'administrator' || user?.role === 'team_manager' || user?.role === 'reviewer'
   const [loading, setLoading] = useState(true)
   const [kpiStats, setKpiStats] = useState<DashboardStats | null>(null)
   const [trendData, setTrendData] = useState<TrendData | null>(null)
   const [collections, setCollections] = useState<Collection[]>([])
+  const [mySubmissions, setMySubmissions] = useState<MySubmission[]>([])
 
   useEffect(() => {
     if (isPrivileged) {
@@ -25,12 +25,21 @@ export default function DashboardPage() {
         getTrend().then(setTrendData).catch(() => null),
       ]).finally(() => setLoading(false))
     } else {
-      listCollections()
-        .then(items => setCollections(items.filter(collection => collection.status === 'published')))
+      Promise.all([
+        listCollections().then(items => setCollections(items.filter(collection => collection.status === 'published'))),
+        listMySubmissions().then(setMySubmissions).catch(() => setMySubmissions([])),
+      ])
         .catch(() => null)
         .finally(() => setLoading(false))
     }
   }, [isPrivileged])
+
+  const latestSubmissionByCollectionId = new Map<number, MySubmission>()
+  for (const submission of mySubmissions) {
+    if (!latestSubmissionByCollectionId.has(submission.collectionId)) {
+      latestSubmissionByCollectionId.set(submission.collectionId, submission)
+    }
+  }
 
   if (loading) {
     return (
@@ -43,7 +52,7 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{dashboardTitle}</h1>
+        <h1 className="text-xl font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Dashboard</h1>
         <p className="text-sm text-[#64748B] mt-0.5">Overview of collection activity.</p>
       </div>
 
@@ -111,27 +120,36 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {collections.map(collection => (
-                <article
-                  key={collection.id}
-                  className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#1E293B] p-5 flex flex-col gap-3"
-                >
-                  <div className="space-y-1">
-                    <h3 className="text-base font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{collection.title}</h3>
-                    <p className="text-sm text-[#64748B] dark:text-[#94A3B8] line-clamp-3">
-                      {collection.description?.trim() || 'No description provided.'}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/fill/${collection.slug}`)}
-                    className="inline-flex items-center gap-1.5 self-start rounded bg-[#2563EB] px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+              {collections.map(collection => {
+                const existingSubmission = latestSubmissionByCollectionId.get(collection.id)
+
+                return (
+                  <article
+                    key={collection.id}
+                    className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#1E293B] p-5 flex flex-col gap-3"
                   >
-                    Open Form
-                    <ArrowRight size={14} />
-                  </button>
-                </article>
-              ))}
+                    <div className="space-y-1">
+                      <h3 className="text-base font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{collection.title}</h3>
+                      <p className="text-sm text-[#64748B] dark:text-[#94A3B8] line-clamp-3">
+                        {collection.description?.trim() || 'No description provided.'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => navigate(existingSubmission ? `/my-submissions/${existingSubmission.responseId}` : `/fill/${collection.slug}`)}
+                      className={[
+                        'inline-flex items-center gap-1.5 self-start rounded px-3 py-2 text-sm font-medium text-white transition-colors',
+                        existingSubmission
+                          ? 'bg-[#16A34A] hover:bg-[#15803D]'
+                          : 'bg-[#2563EB] hover:bg-blue-700',
+                      ].join(' ')}
+                    >
+                      {existingSubmission ? 'Completed' : 'Open Form'}
+                      <ArrowRight size={14} />
+                    </button>
+                  </article>
+                )
+              })}
             </div>
           )}
         </section>

@@ -1,3 +1,4 @@
+import { parseAttachmentValue } from '../utils/attachmentValue'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Calendar, ClipboardList, Clipboard, LayoutGrid, Lock, LockOpen, Mail, MessageSquare, Save, Table2, Tag, Trash2, User, Download, X } from 'lucide-react'
 import { getCollection, getComments, addComment, deleteComment, getResponses, listCollections, upsertStaffFields } from '../api/collections'
@@ -484,6 +485,28 @@ function renderResponseValue(field: CollectionField | undefined, value: string |
     }
   }
 
+  if (field?.type === 'attachment') {
+    const attachments = parseAttachmentValue(raw)
+    if (attachments.length > 0) {
+      return (
+        <ul className="space-y-1">
+          {attachments.map(attachment => (
+            <li key={attachment.attachmentId}>
+              <a
+                href={attachment.downloadUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm text-[#2563EB] hover:underline break-all"
+              >
+                {attachment.fileName}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )
+    }
+  }
+
   const isUrlLike = raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('data:')
   const isImageLike = raw.startsWith('data:image/') || /\.(png|jpe?g|gif|webp|svg)(\?|#|$)/i.test(raw)
 
@@ -585,6 +608,26 @@ function renderTicketHistoryValue(fieldType: string | null | undefined, value: s
   }
 
   if (fieldType === 'attachment') {
+    const attachments = parseAttachmentValue(raw)
+    if (attachments.length > 0) {
+      return (
+        <ul className="space-y-1">
+          {attachments.map(attachment => (
+            <li key={attachment.attachmentId}>
+              <a
+                href={attachment.downloadUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-[#2563EB] underline hover:text-blue-700 break-all"
+              >
+                {attachment.fileName}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )
+    }
+
     return <span className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">Attachment provided</span>
   }
 
@@ -1946,11 +1989,43 @@ export default function RecordsPage() {
         const regularFields = selectedCollection.fields.filter(f => !f.staffOnly && f.id !== undefined)
         const staffOnlyFields = selectedCollection.fields.filter(f => f.staffOnly && f.id !== undefined)
 
-        function cellDisplay(f: CollectionField, value: string | null | undefined): string {
+        function cellDisplay(f: CollectionField, value: string | null | undefined) {
           const raw = value ?? ''
           if (!raw) return '—'
           if (f.type === 'signature') return '[Signature]'
-          if (f.type === 'attachment') return '[Attachment]'
+          if (f.type === 'attachment') {
+            const attachments = parseAttachmentValue(raw)
+            if (attachments.length > 0) {
+              return (
+                <div className="space-y-1">
+                  {attachments.map(attachment => (
+                    <a
+                      key={attachment.attachmentId}
+                      href={attachment.downloadUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block text-[#2563EB] underline hover:text-blue-700 truncate"
+                      title={attachment.fileName}
+                    >
+                      {attachment.fileName}
+                    </a>
+                  ))}
+                </div>
+              )
+            }
+
+            return (
+              <a
+                href={raw}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[#2563EB] underline hover:text-blue-700 truncate block"
+                title={raw}
+              >
+                View attachment
+              </a>
+            )
+          }
           if (f.type === 'custom_table') return '[Table]'
           if (f.type === 'confirmation') return raw === 'true' ? 'Yes' : 'No'
           return raw

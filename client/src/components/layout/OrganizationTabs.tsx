@@ -9,6 +9,14 @@ function getOrganizationLabel(organization: {
   return organization.organizationDescription?.trim() || organization.organizationName
 }
 
+function getUserOrganizationLabel(user: NonNullable<ReturnType<typeof useAuth>['user']>) {
+  return user.activeOrganizationDescription?.trim()
+    || user.activeOrganizationName
+    || user.organizationDescription?.trim()
+    || user.organizationName
+    || null
+}
+
 export default function OrganizationTabs() {
   const { user, switchOrganization } = useAuth()
   const [error, setError] = useState<string | null>(null)
@@ -27,19 +35,29 @@ export default function OrganizationTabs() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  if (!user || user.role === 'super_admin' || user.organizations.length === 0) {
+  if (!user) {
     return null
   }
 
   const activeOrganization =
-    user.organizations.find(organization => organization.organizationId === user.activeOrganizationId) ?? user.organizations[0]
+    user.organizations.find(organization => organization.organizationId === user.activeOrganizationId)
+    ?? user.organizations[0]
+    ?? null
+
+  const organizationLabel = activeOrganization
+    ? getOrganizationLabel(activeOrganization)
+    : getUserOrganizationLabel(user)
+
+  if (!organizationLabel) {
+    return null
+  }
 
   const canSwitchOrganizations = user.organizations.length > 1
 
   return (
     <div className="relative flex items-center gap-1 min-w-0 max-w-[calc(100vw-12rem)] sm:max-w-none" ref={containerRef}>
       <span className="max-w-[96px] sm:max-w-[220px] truncate text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9]">
-        {getOrganizationLabel(activeOrganization)}
+        {organizationLabel}
       </span>
       <button
         type="button"

@@ -174,6 +174,27 @@ export function createSchema(db: AppDatabase): void {
   `)
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS response_attachments (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      collection_id         INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      response_id           INTEGER REFERENCES collection_responses(id) ON DELETE CASCADE,
+      field_id              INTEGER NOT NULL REFERENCES collection_fields(id),
+      uploaded_by_user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      temp_upload_token     TEXT,
+      file_name             TEXT    NOT NULL,
+      mime_type             TEXT    NOT NULL,
+      size_bytes            INTEGER NOT NULL DEFAULT 0,
+      drive_file_id         TEXT    NOT NULL UNIQUE,
+      drive_web_view_url    TEXT,
+      drive_download_url    TEXT,
+      status                TEXT    NOT NULL DEFAULT 'uploaded'
+                                     CHECK(status IN ('uploaded', 'linked', 'deleted')),
+      created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+      deleted_at            TEXT
+    );
+  `)
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS app_settings (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL

@@ -136,6 +136,16 @@ export interface CollectionVersion {
   isActive: boolean
 }
 
+export interface AttachmentReference {
+  attachmentId: number
+  fileName: string
+  mimeType: string
+  sizeBytes: number
+  downloadUrl: string
+  webViewUrl?: string | null
+  uploadToken?: string | null
+}
+
 export interface CollectionResponse {
   id: number
   respondentName: string | null

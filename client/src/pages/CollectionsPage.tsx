@@ -283,8 +283,6 @@ export default function CollectionsPage() {
   const navigate = useNavigate()
   const { showToast } = useToast()
   const { user } = useAuth()
-  const organizationDisplayName = user?.organizationDescription?.trim() || user?.organizationName
-  const collectionsTitle = organizationDisplayName ? `${organizationDisplayName} Collections` : 'Collections'
   const [collections, setCollections] = useState<Collection[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -584,9 +582,7 @@ export default function CollectionsPage() {
       {/* Header */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-xl font-semibold text-[#1E293B] dark:text-[#F1F5F9]">
-            {collectionsTitle}
-          </h1>
+          <h1 className="text-xl font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Collections</h1>
           <p className="text-sm text-[#64748B] mt-0.5">
             {visibleCollections.length} collection{visibleCollections.length !== 1 ? 's' : ''}
           </p>

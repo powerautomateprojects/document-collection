@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom'
 import type { CSSProperties } from 'react'
-import { Calendar, Tag, User, CheckCircle, AlertCircle, Maximize2, X, History, ArrowLeft } from 'lucide-react'
+import { Calendar, Tag, User, CheckCircle, AlertCircle, Maximize2, X, History, ArrowLeft, Paperclip, Trash2, Upload } from 'lucide-react'
+import { deletePendingAttachment, uploadAttachment } from '../api/attachments'
 import { getPublicCollection, submitResponse } from '../api/collections'
 import { updateMySubmission } from '../api/mySubmissions'
 import { getPublicLocations } from '../api/locations'
 import { getPublicSetting } from '../api/settings'
+import { isLegacyAttachmentValue, parseAttachmentValue, stringifyAttachmentValue } from '../utils/attachmentValue'
 import { toEmbedUrl } from '../utils/docPreviewUrl'
 import { getDocumentEmbedUrl, parseDocumentFieldConfig } from '../utils/documentField'
 import { sanitizeRichText } from '../utils/richText'
 import { useAuth } from '../contexts/AuthContext'
 import RichTextEditor from '../components/common/RichTextEditor'
 import QRCode from 'qrcode'
-import type { Collection, CollectionField } from '../types'
+import type { AttachmentReference, Collection, CollectionField } from '../types'
 
 // ── Style tokens ──────────────────────────────────────────────
 
@@ -22,6 +24,7 @@ const INPUT =
   'focus:outline-none focus:ring-2 focus:ring-[#2563EB]'
 
 const LABEL = 'block text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9] mb-1'
+const MAX_ATTACHMENTS_PER_FIELD = 5
 const OTHER_OPTION_MARKER = '__DCP_OTHER_OPTION__'
 const OTHER_RESPONSE_PREFIX = '__DCP_OTHER__::'
 
@@ -87,6 +90,12 @@ function decodeOtherResponse(value: string): string {
 
 function isOtherResponse(value: string): boolean {
   return value.startsWith(OTHER_RESPONSE_PREFIX)
+}
+
+function formatAttachmentSize(sizeBytes: number): string {
+  if (sizeBytes < 1024) return `${sizeBytes} B`
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function getFieldLogicKey(field: CollectionField, fallbackIndex: number): string {
@@ -1123,6 +1132,8 @@ export default function CollectionFillPage() {
         } catch {
           return false
         }
+      case 'attachment':
+        return parseAttachmentValue(value).length > 0 || value.trim() !== ''
       case 'confirmation':
         return value === 'true'
       default:
@@ -1357,12 +1368,26 @@ export default function CollectionFillPage() {
         return value.startsWith('data:image')
           ? <img src={value} alt="Signature" className="max-h-24 rounded border border-[#E2E8F0] dark:border-[#334155] bg-white p-1" />
           : <span className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">{value}</span>
-      case 'attachment':
+      case 'attachment': {
+        const attachments = parseAttachmentValue(value)
+        if (attachments.length > 0) {
+          return (
+            <ul className="space-y-1 text-sm text-[#1E293B] dark:text-[#F1F5F9]">
+              {attachments.map(attachment => (
+                <li key={attachment.attachmentId}>
+                  {attachment.fileName}
+                </li>
+              ))}
+            </ul>
+          )
+        }
+
         return (
           <a href={value} target="_blank" rel="noopener noreferrer" className="text-sm text-[#2563EB] underline break-all">
             View attachment
           </a>
         )
+      }
       case 'custom_table': {
         try {
           const rows = JSON.parse(value) as Array<Record<string, string>>
@@ -1886,6 +1911,7 @@ export default function CollectionFillPage() {
                         onChange={v => setValue(field.id!, v)}
                         disabled={false}
                         collectionSlug={slug ?? ''}
+                        previewMode={isPreview}
                       />
                     ) : null
                   )}
@@ -2017,6 +2043,143 @@ function LocationFieldInput({
   )
 }
 
+function AttachmentFieldInput({
+  value,
+  onChange,
+  disabled,
+  collectionSlug,
+  fieldId,
+  previewMode,
+}: {
+  value: string
+  onChange: (v: string) => void
+  disabled: boolean
+  collectionSlug: string
+  fieldId: number
+  previewMode: boolean
+}) {
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const attachments = useMemo(() => parseAttachmentValue(value), [value])
+  const legacyAttachment = !attachments.length && isLegacyAttachmentValue(value) ? value : null
+
+  async function handleFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    if (files.length === 0) return
+
+    const remainingSlots = Math.max(0, MAX_ATTACHMENTS_PER_FIELD - attachments.length)
+    if (remainingSlots === 0) {
+      setError(`You can upload up to ${MAX_ATTACHMENTS_PER_FIELD} attachments for this field.`)
+      return
+    }
+
+    if (files.length > remainingSlots) {
+      setError(`You can add ${remainingSlots} more attachment${remainingSlots === 1 ? '' : 's'} to this field.`)
+      return
+    }
+
+    setUploading(true)
+    setError(null)
+
+    try {
+      const uploaded: AttachmentReference[] = []
+      for (const [index, file] of files.entries()) {
+        if (previewMode) {
+          uploaded.push({
+            attachmentId: Date.now() + index,
+            fileName: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            sizeBytes: file.size,
+            downloadUrl: '',
+            webViewUrl: null,
+            uploadToken: 'preview',
+          })
+          continue
+        }
+
+        uploaded.push(await uploadAttachment(collectionSlug, fieldId, file))
+      }
+
+      const next = [...attachments, ...uploaded]
+      onChange(next.length > 0 ? stringifyAttachmentValue(next) : '')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to upload attachment')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function handleRemoveAttachment(attachment: AttachmentReference) {
+    setError(null)
+    try {
+      if (!previewMode && attachment.uploadToken) {
+        await deletePendingAttachment(collectionSlug, attachment.attachmentId, attachment.uploadToken)
+      }
+      const next = attachments.filter(item => item.attachmentId !== attachment.attachmentId)
+      onChange(next.length > 0 ? stringifyAttachmentValue(next) : '')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove attachment')
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded border border-dashed border-[#CBD5E1] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A] p-3">
+        <label className="inline-flex items-center gap-2 rounded bg-white dark:bg-[#111827] border border-[#E2E8F0] dark:border-[#334155] px-3 py-2 text-sm font-medium text-[#475569] dark:text-[#E2E8F0] cursor-pointer hover:bg-[#F8FAFC] dark:hover:bg-[#1E293B] transition-colors">
+          <Upload size={14} />
+          Add attachments
+          <input
+            type="file"
+            multiple
+            disabled={disabled || uploading}
+            onChange={handleFileSelection}
+            className="hidden"
+          />
+        </label>
+        <p className="mt-2 text-xs text-[#64748B] dark:text-[#94A3B8]">Upload up to {MAX_ATTACHMENTS_PER_FIELD} files for this field.</p>
+      </div>
+
+      {uploading && <p className="text-sm text-[#2563EB]">Uploading attachment…</p>}
+
+      {attachments.length > 0 && (
+        <ul className="space-y-2">
+          {attachments.map(attachment => (
+            <li key={attachment.attachmentId} className="flex items-start justify-between gap-3 rounded border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#111827] px-3 py-2">
+              <div className="min-w-0 flex items-start gap-2">
+                <Paperclip size={14} className="mt-0.5 shrink-0 text-[#64748B]" />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9] truncate">{attachment.fileName}</p>
+                  <p className="text-xs text-[#64748B] dark:text-[#94A3B8]">{attachment.mimeType} • {formatAttachmentSize(attachment.sizeBytes)}</p>
+                </div>
+              </div>
+              {!disabled && (
+                <button
+                  type="button"
+                  onClick={() => void handleRemoveAttachment(attachment)}
+                  className="inline-flex items-center gap-1 text-xs text-red-500 hover:text-red-600 transition-colors"
+                >
+                  <Trash2 size={12} />
+                  Remove
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {legacyAttachment && (
+        <a href={legacyAttachment} target="_blank" rel="noopener noreferrer" className="inline-flex text-sm text-[#2563EB] underline break-all">
+          View attachment
+        </a>
+      )}
+
+      {error && <p className="text-sm text-red-500">{error}</p>}
+    </div>
+  )
+}
+
 // ── Field renderer ────────────────────────────────────────────
 
 function FieldRenderer({
@@ -2025,12 +2188,14 @@ function FieldRenderer({
   onChange,
   disabled,
   collectionSlug,
+  previewMode,
 }: {
   field: CollectionField
   value: string
   onChange: (v: string) => void
   disabled: boolean
   collectionSlug: string
+  previewMode: boolean
 }) {
   const required = field.required && !disabled
   const optionList = field.options ?? []
@@ -2284,17 +2449,13 @@ function FieldRenderer({
       )}
 
       {field.type === 'attachment' && (
-        <input
-          type="file"
+        <AttachmentFieldInput
+          value={value}
+          onChange={onChange}
           disabled={disabled}
-          onChange={e => {
-            const file = e.target.files?.[0]
-            if (!file) return
-            const reader = new FileReader()
-            reader.onload = () => onChange(reader.result as string)
-            reader.readAsDataURL(file)
-          }}
-          className="text-sm text-[#64748B] file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-[#F1F5F9] file:text-[#475569] hover:file:bg-[#E2E8F0] dark:file:bg-[#334155] dark:file:text-[#94A3B8]"
+          collectionSlug={collectionSlug}
+          fieldId={field.id ?? 0}
+          previewMode={previewMode}
         />
       )}
 

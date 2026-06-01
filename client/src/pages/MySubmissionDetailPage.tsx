@@ -4,6 +4,7 @@ import { ArrowLeft, CheckSquare, AlertCircle } from 'lucide-react'
 import { getMySubmission, type MySubmissionDetail } from '../api/mySubmissions'
 import { getCategoryColorClasses } from '../utils/categoryColors'
 import { timeAgo } from '../utils/timeAgo'
+import { parseAttachmentValue } from '../utils/attachmentValue'
 
 function ReadOnlyField({
   label,
@@ -72,16 +73,38 @@ function ReadOnlyField({
           <span className={VALUE}>{value}</span>
         )
       case 'attachment':
-        return (
-          <a
-            href={value}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm text-[#2563EB] underline hover:text-blue-700 break-all"
-          >
-            {value}
-          </a>
-        )
+        {
+          const attachments = parseAttachmentValue(value)
+          if (attachments.length > 0) {
+            return (
+              <ul className="space-y-1">
+                {attachments.map(attachment => (
+                  <li key={attachment.attachmentId}>
+                    <a
+                      href={attachment.downloadUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-[#2563EB] underline hover:text-blue-700 break-all"
+                    >
+                      {attachment.fileName}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )
+          }
+
+          return (
+            <a
+              href={value}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-[#2563EB] underline hover:text-blue-700 break-all"
+            >
+              {value}
+            </a>
+          )
+        }
       case 'custom_table': {
         try {
           const rows = JSON.parse(value) as Record<string, string>[]
