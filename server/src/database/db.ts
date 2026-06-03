@@ -19,6 +19,17 @@ function hasForeignKeyTarget(database: AppDatabase, tableName: string, targetTab
 }
 
 function rebuildCollectionResponseValues(database: AppDatabase): void {
+  const existingResponseValueCols = database
+    .prepare(`PRAGMA table_info(collection_response_values_old)`)
+    .all() as Array<{ name: string }>
+  const oldResponseValueColNames = new Set(existingResponseValueCols.map(column => column.name))
+  const staffUpdatedByNameExpr = oldResponseValueColNames.has('staff_updated_by_name')
+    ? 'staff_updated_by_name'
+    : 'NULL'
+  const staffUpdatedAtExpr = oldResponseValueColNames.has('staff_updated_at')
+    ? 'staff_updated_at'
+    : 'NULL'
+
   database.exec('PRAGMA foreign_keys = OFF')
   try {
     database.transaction(() => {
@@ -35,9 +46,7 @@ function rebuildCollectionResponseValues(database: AppDatabase): void {
       `).run()
       database.prepare(`
         INSERT INTO collection_response_values (id, response_id, field_id, value, staff_updated_by_name, staff_updated_at)
-        SELECT id, response_id, field_id, value,
-          CASE WHEN EXISTS(SELECT 1 FROM pragma_table_info('collection_response_values_old') WHERE name='staff_updated_by_name') THEN staff_updated_by_name ELSE NULL END,
-          CASE WHEN EXISTS(SELECT 1 FROM pragma_table_info('collection_response_values_old') WHERE name='staff_updated_at') THEN staff_updated_at ELSE NULL END
+        SELECT id, response_id, field_id, value, ${staffUpdatedByNameExpr}, ${staffUpdatedAtExpr}
         FROM collection_response_values_old
       `).run()
       database.prepare('DROP TABLE collection_response_values_old').run()
@@ -687,6 +696,11 @@ function runMigrations(db: AppDatabase): void {
   if (!collectionColNames.has('logo_url')) {
     db.exec(`ALTER TABLE collections ADD COLUMN logo_url TEXT`)
     console.log('[db] Migration: added collections.logo_url')
+  }
+
+  if (!collectionColNames.has('cover_photo_asset_id')) {
+    db.exec(`ALTER TABLE collections ADD COLUMN cover_photo_asset_id INTEGER REFERENCES gallery_assets(id) ON DELETE SET NULL`)
+    console.log('[db] Migration: added collections.cover_photo_asset_id')
   }
 
   const versionsExists = db
@@ -1653,6 +1667,27 @@ function runMigrations(db: AppDatabase): void {
       )
     `)
     console.log('[db] Migration: created user_locations table')
+  }
+
+  if (!tableExists(db, 'gallery_assets')) {
+    db.exec(`
+      CREATE TABLE gallery_assets (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        organization_id       INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        name                  TEXT    NOT NULL,
+        alt_text              TEXT,
+        tags                  TEXT,
+        mime_type             TEXT    NOT NULL,
+        size_bytes            INTEGER NOT NULL DEFAULT 0,
+        drive_file_id         TEXT    NOT NULL UNIQUE,
+        drive_web_view_url    TEXT,
+        drive_download_url    TEXT,
+        created_by_user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+      )
+    `)
+    console.log('[db] Migration: created gallery_assets table')
   }
 
   // ── Repair user_locations FK if broken by ALTER TABLE users RENAME ───────────

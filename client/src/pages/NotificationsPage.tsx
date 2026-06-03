@@ -114,6 +114,11 @@ export default function NotificationsPage() {
                   )}
                   <div>
                   <p className="text-sm font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{item.title}</p>
+                  {item.targetType === 'submission' && item.targetId !== null && (
+                    <p className="text-xs font-medium uppercase tracking-wide text-[#2563EB] dark:text-[#93C5FD] mt-1">
+                      Submission #{item.targetId}
+                    </p>
+                  )}
                   <p className="text-sm text-[#475569] dark:text-[#94A3B8] mt-1">{item.message}</p>
                   {item.dueDate && (
                     <p className="text-xs text-[#64748B] mt-1">Due: {item.dueDate}</p>

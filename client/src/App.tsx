@@ -16,6 +16,7 @@ import TicketDesignerPage from './pages/TicketDesignerPage'
 import NotificationsPage from './pages/NotificationsPage'
 import MySubmissionsPage from './pages/MySubmissionsPage'
 import MySubmissionDetailPage from './pages/MySubmissionDetailPage'
+import ApprovalsPage from './pages/ApprovalsPage'
 
 function RequireAuth() {
   const { user } = useAuth()
@@ -32,33 +33,43 @@ function RequireRole({ allowed, fallback = '/dashboard' }: { allowed: UserRole[]
 
 export default function App() {
   const { user } = useAuth()
+  const defaultAuthenticatedRoute = user?.role === 'user'
+    ? '/dashboard'
+    : user?.role === 'reviewer'
+      ? '/collections'
+      : '/collections'
 
   return (
     <Routes>
       {/* Public */}
       <Route
         path="/login"
-        element={!user ? <LoginPage /> : <Navigate to="/collections" replace />}
+        element={!user ? <LoginPage /> : <Navigate to={defaultAuthenticatedRoute} replace />}
       />
       <Route path="/fill/:slug" element={<CollectionFillPage />} />
 
       {/* Protected shell */}
       <Route element={<RequireAuth />}>
         <Route element={<HomePage />}>
-          <Route index element={<Navigate to={user?.role === 'user' ? '/dashboard' : '/collections'} replace />} />
+          <Route index element={<Navigate to={defaultAuthenticatedRoute} replace />} />
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/my-submissions" element={<MySubmissionsPage />} />
           <Route path="/my-submissions/:responseId" element={<MySubmissionDetailPage />} />
 
-          {/* Collections + admin routes: user role redirected to dashboard */}
-          <Route element={<RequireRole allowed={['super_admin', 'administrator', 'team_manager']} fallback="/dashboard" />}>
+          {/* Reviewer-and-up read routes */}
+          <Route element={<RequireRole allowed={['super_admin', 'administrator', 'team_manager', 'reviewer']} fallback="/dashboard" />}>
             <Route path="/collections" element={<CollectionsPage />} />
+            <Route path="/records" element={<RecordsPage />} />
+            <Route path="/reports" element={<ReportsPage />} />
+            <Route path="/approvals" element={<ApprovalsPage />} />
+          </Route>
+
+          {/* Management routes */}
+          <Route element={<RequireRole allowed={['super_admin', 'administrator', 'team_manager']} fallback="/dashboard" />}>
             <Route path="/collections/new" element={<CollectionBuilderPage />} />
             <Route path="/collections/:id/edit" element={<CollectionBuilderPage />} />
             <Route path="/collections/:id/branching" element={<CollectionBranchingPage />} />
-            <Route path="/records" element={<RecordsPage />} />
-            <Route path="/reports" element={<ReportsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="ticket-designer" element={<TicketDesignerPage />} />
           </Route>
@@ -69,7 +80,7 @@ export default function App() {
         </Route>
       </Route>
 
-      <Route path="*" element={<Navigate to={user ? (user.role === 'user' ? '/dashboard' : '/collections') : '/login'} replace />} />
+      <Route path="*" element={<Navigate to={user ? defaultAuthenticatedRoute : '/login'} replace />} />
     </Routes>
   )
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Bell, Building2, ChevronDown, ChevronRight, Code2, Database, ExternalLink, GripVertical, Mail, MapPin, MessageSquare, Pencil, Plus, Save, Tag, Trash2, Users, X } from 'lucide-react'
+import { Bell, Building2, ChevronDown, ChevronRight, Code2, Database, ExternalLink, GripVertical, Image as ImageIcon, Mail, MapPin, MessageSquare, Pencil, Plus, Save, Tag, Trash2, Users, X } from 'lucide-react'
 import {
   DndContext,
   type DragEndEvent,
@@ -34,12 +34,13 @@ import {
   updateCategory,
 } from '../api/categories'
 import { listCollections, seedCollectionData } from '../api/collections'
+import { deleteGalleryAsset, listGalleryAssets, uploadGalleryAsset } from '../api/galleryAssets'
 import { getPublicSetting, updateSetting } from '../api/settings'
 import { listUsers, createUser, deleteUser, updateUser, sendInvite, type AppUser } from '../api/users'
 import { getUserLocations, updateUserLocations, listLocations, createLocation, deleteLocation, updateLocation } from '../api/locations'
 import { LocationTypeahead } from '../components/common/LocationTypeahead'
 import { useAuth } from '../contexts/AuthContext'
-import type { Category, Collection, Location, MembershipRole, Organization } from '../types'
+import type { Category, Collection, GalleryAsset, Location, MembershipRole, Organization } from '../types'
 import { getCategoryColorClasses } from '../utils/categoryColors'
 
 const INPUT =
@@ -55,6 +56,7 @@ type PanelId =
   | 'login-page'
   | 'users'
   | 'locations'
+  | 'gallery'
   | 'qr-code'
   | 'logo-padding'
   | 'api'
@@ -65,7 +67,7 @@ type PanelLayout = Record<TabId, PanelId[]>
 
 const SETTINGS_LAYOUT_PREF = 'settings_panel_layout'
 const DEFAULT_PANEL_LAYOUT: PanelLayout = {
-  general: ['organizations', 'categories', 'notifications', 'login-page', 'users', 'locations'],
+  general: ['organizations', 'categories', 'notifications', 'login-page', 'users', 'locations', 'gallery'],
   other: ['qr-code', 'logo-padding', 'api', 'seed'],
 }
 const PANEL_LABELS: Record<PanelId, string> = {
@@ -75,6 +77,7 @@ const PANEL_LABELS: Record<PanelId, string> = {
   'login-page': 'Login Page',
   users: 'User Accounts',
   locations: 'Locations',
+  gallery: 'Cover Photo Gallery',
   'qr-code': 'QR Code',
   'logo-padding': 'Image Logo URL Padding',
   api: 'API Documentation',
@@ -312,6 +315,7 @@ export default function SettingsPage() {
   const [loginPageExpanded, setLoginPageExpanded] = useState(false)
   const [organizationsExpanded, setOrganizationsExpanded] = useState(false)
   const [locationsExpanded, setLocationsExpanded] = useState(false)
+  const [galleryExpanded, setGalleryExpanded] = useState(false)
   const [usersExpanded, setUsersExpanded] = useState(false)
   const [seedExpanded, setSeedExpanded] = useState(false)
   const [organizations, setOrganizations] = useState<Organization[]>([])
@@ -339,6 +343,15 @@ export default function SettingsPage() {
   const [locationEditSaving, setLocationEditSaving] = useState(false)
   const [editingLocationId, setEditingLocationId] = useState<number | null>(null)
   const [editingLocationName, setEditingLocationName] = useState('')
+  const [galleryAssets, setGalleryAssets] = useState<GalleryAsset[]>([])
+  const [galleryLoading, setGalleryLoading] = useState(false)
+  const [galleryError, setGalleryError] = useState<string | null>(null)
+  const [galleryUploadName, setGalleryUploadName] = useState('')
+  const [galleryUploadAltText, setGalleryUploadAltText] = useState('')
+  const [galleryUploadTags, setGalleryUploadTags] = useState('')
+  const [galleryUploadFile, setGalleryUploadFile] = useState<File | null>(null)
+  const [galleryUploadSaving, setGalleryUploadSaving] = useState(false)
+  const [galleryDeleteSavingId, setGalleryDeleteSavingId] = useState<number | null>(null)
   const [allUsers, setAllUsers] = useState<AppUser[]>([])
   const [seedCollections, setSeedCollections] = useState<Collection[]>([])
   const [seedCollectionsLoading, setSeedCollectionsLoading] = useState(false)
@@ -480,6 +493,8 @@ export default function SettingsPage() {
     if (user?.role === 'administrator' || user?.role === 'super_admin') {
       loadOrganizations()
       loadUsers()
+      void loadLocations()
+      void loadGallery()
     }
   }, [user?.role])
 
@@ -735,6 +750,60 @@ export default function SettingsPage() {
       // silent
     } finally {
       setLocationsLoading(false)
+    }
+  }
+
+  async function loadGallery() {
+    setGalleryLoading(true)
+    setGalleryError(null)
+    try {
+      const items = await listGalleryAssets()
+      setGalleryAssets(items)
+    } catch (err) {
+      setGalleryError((err as Error).message)
+    } finally {
+      setGalleryLoading(false)
+    }
+  }
+
+  async function handleGalleryUpload() {
+    if (!galleryUploadFile) {
+      setGalleryError('Please select an image to upload.')
+      return
+    }
+
+    const name = galleryUploadName.trim() || galleryUploadFile.name
+    setGalleryUploadSaving(true)
+    setGalleryError(null)
+    try {
+      const created = await uploadGalleryAsset({
+        file: galleryUploadFile,
+        name,
+        altText: galleryUploadAltText,
+        tags: galleryUploadTags,
+      })
+      setGalleryAssets(prev => [created, ...prev])
+      setGalleryUploadName('')
+      setGalleryUploadAltText('')
+      setGalleryUploadTags('')
+      setGalleryUploadFile(null)
+    } catch (err) {
+      setGalleryError((err as Error).message)
+    } finally {
+      setGalleryUploadSaving(false)
+    }
+  }
+
+  async function handleGalleryDelete(id: number) {
+    setGalleryDeleteSavingId(id)
+    setGalleryError(null)
+    try {
+      await deleteGalleryAsset(id)
+      setGalleryAssets(prev => prev.filter(asset => asset.id !== id))
+    } catch (err) {
+      setGalleryError((err as Error).message)
+    } finally {
+      setGalleryDeleteSavingId(null)
     }
   }
 
@@ -2338,6 +2407,133 @@ export default function SettingsPage() {
                   )}
                 </div>
               </div>
+            </div>
+          )}
+        </section>
+      )
+      case 'gallery': return (user?.role !== 'super_admin' && user?.role !== 'administrator') ? null : (
+        <section className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
+          <button
+            type="button"
+            onClick={() => {
+              const next = !galleryExpanded
+              setGalleryExpanded(next)
+              if (next && galleryAssets.length === 0) void loadGallery()
+            }}
+            className="w-full flex items-center justify-between gap-4 px-5 py-4 text-left hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                <ImageIcon size={18} />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Cover Photo Gallery</h2>
+                <p className="text-sm text-[#64748B] mt-1">Upload organization-specific cover images here before assigning them to collections.</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="text-xs font-medium text-[#64748B]">{galleryAssets.length} total</span>
+              {galleryExpanded ? (
+                <ChevronDown size={18} className="text-[#64748B]" />
+              ) : (
+                <ChevronRight size={18} className="text-[#64748B]" />
+              )}
+            </div>
+          </button>
+
+          {galleryExpanded && (
+            <div className="border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-6">
+              <div className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A] p-4 space-y-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Upload to {user?.activeOrganizationDescription ?? user?.activeOrganizationName ?? 'current organization'} gallery</h3>
+                  <p className="mt-1 text-xs text-[#64748B]">Collections can only choose cover images that already exist in this gallery.</p>
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <input
+                    type="text"
+                    value={galleryUploadName}
+                    onChange={e => setGalleryUploadName(e.target.value)}
+                    placeholder="Image name"
+                    className={INPUT}
+                  />
+                  <input
+                    type="text"
+                    value={galleryUploadAltText}
+                    onChange={e => setGalleryUploadAltText(e.target.value)}
+                    placeholder="Alt text (optional)"
+                    className={INPUT}
+                  />
+                </div>
+                <input
+                  type="text"
+                  value={galleryUploadTags}
+                  onChange={e => setGalleryUploadTags(e.target.value)}
+                  placeholder="Tags, comma separated"
+                  className={INPUT}
+                />
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={e => setGalleryUploadFile(e.target.files?.[0] ?? null)}
+                    className="block text-sm text-[#475569] dark:text-[#CBD5E1]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleGalleryUpload()}
+                    disabled={galleryUploadSaving || !galleryUploadFile}
+                    className="inline-flex items-center justify-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+                  >
+                    <Plus size={14} />
+                    {galleryUploadSaving ? 'Uploading…' : 'Upload to Gallery'}
+                  </button>
+                </div>
+              </div>
+
+              {galleryError && <p className="text-sm text-red-500">{galleryError}</p>}
+
+              {galleryLoading ? (
+                <p className="text-sm text-[#64748B]">Loading gallery…</p>
+              ) : galleryAssets.length === 0 ? (
+                <p className="text-sm text-[#64748B]">No gallery images uploaded yet.</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {galleryAssets.map(asset => (
+                    <article key={asset.id} className="overflow-hidden rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#0F172A]">
+                      <div className="h-40 bg-[#F8FAFC] dark:bg-[#0F172A]">
+                        <img src={asset.fileUrl} alt={asset.altText ?? asset.name} className="h-full w-full object-cover" />
+                      </div>
+                      <div className="space-y-2 p-4">
+                        <div>
+                          <h3 className="text-sm font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{asset.name}</h3>
+                          <p className="mt-1 text-xs text-[#64748B]">Used by {asset.usageCount} collection{asset.usageCount === 1 ? '' : 's'}</p>
+                        </div>
+                        {asset.tags.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {asset.tags.map(tag => (
+                              <span key={`${asset.id}-${tag}`} className="rounded-full bg-[#E2E8F0] dark:bg-[#1E293B] px-2 py-1 text-[11px] text-[#475569] dark:text-[#CBD5E1]">
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-xs text-[#94A3B8]">{new Date(asset.createdAt).toLocaleDateString()}</span>
+                          <button
+                            type="button"
+                            onClick={() => void handleGalleryDelete(asset.id)}
+                            disabled={asset.usageCount > 0 || galleryDeleteSavingId === asset.id}
+                            className="inline-flex items-center gap-1.5 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-sm font-medium px-3 py-2 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-50"
+                          >
+                            <Trash2 size={14} />
+                            {galleryDeleteSavingId === asset.id ? 'Deleting…' : 'Delete'}
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </section>

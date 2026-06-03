@@ -60,6 +60,8 @@ export interface NotificationListItem {
   userId: number | null
   collectionId: number | null
   collectionSlug: string | null
+  targetType: NotificationTargetType | null
+  targetId: number | null
   type: NotificationType
   title: string
   message: string
@@ -97,6 +99,8 @@ interface DbNotificationListRow {
   read_at: string | null
   collection_id: number | null
   collection_slug: string | null
+  target_type: NotificationTargetType | null
+  target_id: number | null
   type: NotificationType
   title: string
   message: string
@@ -282,6 +286,8 @@ function toApiNotification(row: DbNotificationListRow): NotificationListItem {
     userId: row.recipient_user_id,
     collectionId: row.collection_id,
     collectionSlug: row.collection_slug,
+    targetType: row.target_type,
+    targetId: row.target_id,
     type: row.type,
     title: row.title,
     message: row.message,
@@ -524,6 +530,8 @@ export function listInAppNotificationsForUser(
          d.read_at,
          e.collection_id,
          e.collection_slug,
+         e.target_type,
+         e.target_id,
          e.type,
          e.title,
          e.message,

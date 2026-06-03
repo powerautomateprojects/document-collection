@@ -1,4 +1,6 @@
 import type {
+  ApprovalWorkflowDefinition,
+  ApprovalWorkflowSummary,
   Collection,
   CollectionField,
   CollectionResponse,
@@ -15,9 +17,12 @@ export interface CollectionPayload {
   category?: string
   dateDue?: string
   coverPhotoUrl?: string
+  coverPhotoAssetId?: number | null
   logoUrl?: string
   instructions?: string
   instructionsDocUrl?: string
+  workflowDefinition?: ApprovalWorkflowDefinition | null
+  sourceTemplateCollectionId?: number | null
   anonymous: boolean
   allowSubmissionEdits: boolean
   submissionEditWindowHours?: number
@@ -152,6 +157,36 @@ export async function getResponses(collectionId: number): Promise<CollectionResp
     headers: authHeaders(),
   })
   return handleResponse<CollectionResponse[]>(res)
+}
+
+async function actOnResponseWorkflow(
+  collectionId: number,
+  responseId: number,
+  decision: 'approve' | 'reject',
+  comment?: string,
+): Promise<ApprovalWorkflowSummary> {
+  const res = await fetch(`/api/collections/${collectionId}/responses/${responseId}/workflow/${decision}`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ comment }),
+  })
+  return handleResponse<ApprovalWorkflowSummary>(res)
+}
+
+export function approveResponseWorkflow(
+  collectionId: number,
+  responseId: number,
+  comment?: string,
+): Promise<ApprovalWorkflowSummary> {
+  return actOnResponseWorkflow(collectionId, responseId, 'approve', comment)
+}
+
+export function rejectResponseWorkflow(
+  collectionId: number,
+  responseId: number,
+  comment?: string,
+): Promise<ApprovalWorkflowSummary> {
+  return actOnResponseWorkflow(collectionId, responseId, 'reject', comment)
 }
 
 export async function upsertStaffFields(

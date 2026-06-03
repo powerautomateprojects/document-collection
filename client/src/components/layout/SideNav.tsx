@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom'
+import { useEffect, useState } from 'react'
 import {
   LayoutDashboard,
   Database,
@@ -8,9 +9,11 @@ import {
   Settings,
   ClipboardList,
   ClipboardCheck,
+  CheckSquare,
   X,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
+import { getPendingApprovals } from '../../api/approvals'
 import type { LucideIcon } from 'lucide-react'
 import type { UserRole } from '../../types'
 
@@ -41,15 +44,37 @@ const USER_NAV_ITEMS: NavItem[] = [
   { icon: ClipboardCheck,  label: 'My Submissions',  to: '/my-submissions'   },
 ]
 
+const REVIEWER_NAV_ITEMS: NavItem[] = [
+  { icon: LayoutDashboard, label: 'Dashboard',       to: '/dashboard'        },
+  { icon: Database,        label: 'Collections',     to: '/collections'      },
+  { icon: FileText,        label: 'Records',         to: '/records'          },
+  { icon: BarChart3,       label: 'Reports',         to: '/reports'          },
+]
+
 export default function SideNav({
   mobileDrawerOpen = false,
   onCloseMobileDrawer,
 }: SideNavProps) {
   const { user } = useAuth()
-  const visibleNavItems =
+  const [hasPendingApprovals, setHasPendingApprovals] = useState(false)
+
+  useEffect(() => {
+    if (!user || user.role === 'user') return
+    getPendingApprovals()
+      .then(items => setHasPendingApprovals(items.length > 0))
+      .catch(() => {})
+  }, [user])
+
+  const baseNavItems =
     user?.role === 'user'
       ? USER_NAV_ITEMS
-      : NAV_ITEMS.filter(item => !item.roles || (user ? item.roles.includes(user.role) : false))
+      : user?.role === 'reviewer'
+        ? REVIEWER_NAV_ITEMS
+        : NAV_ITEMS.filter(item => !item.roles || (user ? item.roles.includes(user.role) : false))
+
+  const visibleNavItems: NavItem[] = hasPendingApprovals
+    ? [...baseNavItems, { icon: CheckSquare, label: 'Approvals', to: '/approvals' }]
+    : baseNavItems
 
   return (
     <>

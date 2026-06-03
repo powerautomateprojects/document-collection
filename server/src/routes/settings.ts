@@ -115,7 +115,7 @@ router.get('/:key', (req: Request, res: Response) => {
  *         description: Setting key not found
  */
 router.put('/:key', authenticateToken, (req: Request, res: Response) => {
-  if (req.user?.role !== 'administrator') {
+  if (req.user?.role !== 'administrator' && req.user?.role !== 'super_admin') {
     res.status(403).json({ error: 'Administrator access required' })
     return
   }

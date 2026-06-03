@@ -19,8 +19,11 @@ import mySubmissionsRouter from './routes/my-submissions'
 import healthRouter from './routes/health'
 import invitationsRouter from './routes/invitations'
 import locationsRouter from './routes/locations'
+import galleryAssetsRouter from './routes/gallery-assets'
 import ticketTemplatesRouter from './routes/ticket-templates'
+import approvalsRouter from './routes/approvals'
 import { dispatchPendingEmailNotifications, generateDueDateNotifications } from './services/notifications'
+import { processWorkflowEscalations } from './services/approvalWorkflows'
 
 const app = express()
 const PORT = process.env.PORT ?? 4000
@@ -68,6 +71,11 @@ function runNotificationSweep() {
     console.error('[notifications] generateDueDateNotifications failed:', (err as Error).message)
   }
   try {
+    processWorkflowEscalations()
+  } catch (err) {
+    console.error('[workflows] processWorkflowEscalations failed:', (err as Error).message)
+  }
+  try {
     dispatchPendingEmailNotifications()
   } catch (err) {
     console.error('[notifications] dispatchPendingEmailNotifications failed:', (err as Error).message)
@@ -93,7 +101,9 @@ app.use('/api/stats', statsRouter)
 app.use('/api/my-submissions', mySubmissionsRouter)
 app.use('/api/invitations', invitationsRouter)
 app.use('/api/locations', locationsRouter)
+app.use('/api/gallery-assets', galleryAssetsRouter)
 app.use('/api/ticket-templates', ticketTemplatesRouter)
+app.use('/api/approvals', approvalsRouter)
 app.use('/api', healthRouter)
 
 // Health check for platform probes (non-API path)

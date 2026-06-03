@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom'
 import type { CSSProperties } from 'react'
-import { Building2, Calendar, Tag, User, CheckCircle, AlertCircle, Maximize2, X, History, ArrowLeft, Paperclip, Trash2, Upload } from 'lucide-react'
+import { Building2, Calendar, Tag, CheckCircle, AlertCircle, Maximize2, X, History, ArrowLeft, Paperclip, Trash2, Upload } from 'lucide-react'
 import { deletePendingAttachment, uploadAttachment } from '../api/attachments'
 import { getPublicCollection, submitResponse } from '../api/collections'
 import { updateMySubmission } from '../api/mySubmissions'

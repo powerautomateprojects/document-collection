@@ -8,6 +8,14 @@ import { loadRequestUserContext, isAdministrator, canViewResponses, canViewAllRe
 import { parseAttachmentValue, stringifyAttachmentValue, type AttachmentReference } from '../lib/attachmentValue'
 import { deleteDriveFile, downloadDriveFile, isGoogleDriveConfigured, uploadBufferToDrive } from '../services/googleDrive'
 import { sendNotificationEmail, isEmailDeliveryConfigured } from '../services/notificationEmail'
+import {
+  actOnWorkflowStage,
+  getWorkflowSummaryForResponse,
+  initializeWorkflowForResponse,
+  parseWorkflowDefinition,
+  serializeWorkflowDefinition,
+  type ApprovalWorkflowDefinition,
+} from '../services/approvalWorkflows'
 
 const router = Router()
 const attachmentUpload = multer({
@@ -70,9 +78,13 @@ interface DbCollection {
   created_by: number
   date_due: string | null
   cover_photo_url: string | null
+  cover_photo_asset_id: number | null
   logo_url: string | null
   instructions: string | null
   instructions_doc_url: string | null
+  workflow_definition: string | null
+  source_template_collection_id: number | null
+  template_usage_count?: number | null
   active_version_id: number | null
   active_version_number?: number | null
   active_version_status?: 'draft' | 'published' | null
@@ -188,6 +200,118 @@ function buildAttachmentDownloadUrl(attachmentId: number): string {
   return `/api/collections/attachments/${attachmentId}/download`
 }
 
+function ensureWorkflowInstanceForResponse(
+  db: ReturnType<typeof getDb>,
+  collection: DbCollection,
+  responseId: number,
+): void {
+  if (!collection.workflow_definition) {
+    return
+  }
+
+  const existing = db
+    .prepare('SELECT id FROM approval_workflow_instances WHERE response_id = ?')
+    .get(responseId) as { id: number } | undefined
+  if (existing) {
+    return
+  }
+
+  const responseValues = db
+    .prepare(
+      `SELECT rv.value, cf.field_key
+       FROM collection_response_values rv
+       JOIN collection_fields cf ON cf.id = rv.field_id
+       WHERE rv.response_id = ?`
+    )
+    .all(responseId) as Array<{ value: string | null; field_key: string | null }>
+
+  initializeWorkflowForResponse({
+    collectionId: collection.id,
+    responseId,
+    organizationId: collection.organization_id,
+    collectionTitle: collection.title,
+    workflowDefinition: parseWorkflowDefinition(collection.workflow_definition),
+    fieldValues: responseValues
+      .filter((item) => Boolean(item.field_key))
+      .map((item) => ({
+        fieldKey: item.field_key as string,
+        value: item.value,
+      })),
+    db,
+  })
+}
+
+function getVisibleResponseCountMap(
+  db: ReturnType<typeof getDb>,
+  context: RequestUserContext,
+  collectionIds: number[],
+): Map<number, number> {
+  if (collectionIds.length === 0) {
+    return new Map()
+  }
+
+  const ph = collectionIds.map(() => '?').join(',')
+
+  if (canViewAllResponses(context)) {
+    const responseCounts = db
+      .prepare(`SELECT collection_id, COUNT(*) AS n FROM collection_responses WHERE collection_id IN (${ph}) GROUP BY collection_id`)
+      .all(...collectionIds) as unknown as Array<{ collection_id: number; n: number }>
+    return new Map(responseCounts.map(row => [row.collection_id, row.n]))
+  }
+
+  const locationFields = db
+    .prepare(
+      `SELECT MIN(id) AS id, collection_id
+       FROM collection_fields
+       WHERE collection_id IN (${ph}) AND type = 'location'
+       GROUP BY collection_id`
+    )
+    .all(...collectionIds) as unknown as Array<{ id: number; collection_id: number }>
+  const locationFieldByCollection = new Map(locationFields.map(row => [row.collection_id, row.id]))
+
+  const assignedLocations = db
+    .prepare(
+      `SELECT l.name FROM user_locations ul
+       JOIN locations l ON l.id = ul.location_id
+       WHERE ul.user_id = ?`
+    )
+    .all(context.id) as unknown as Array<{ name: string }>
+  const locationNames = assignedLocations.map(row => row.name)
+
+  const result = new Map<number, number>()
+
+  for (const collectionId of collectionIds) {
+    const locationFieldId = locationFieldByCollection.get(collectionId)
+    if (!locationFieldId) {
+      const row = db
+        .prepare('SELECT COUNT(*) AS n FROM collection_responses WHERE collection_id = ?')
+        .get(collectionId) as unknown as { n: number }
+      result.set(collectionId, row.n)
+      continue
+    }
+
+    if (locationNames.length === 0) {
+      result.set(collectionId, 0)
+      continue
+    }
+
+    const locationPh = locationNames.map(() => '?').join(',')
+    const row = db
+      .prepare(
+        `SELECT COUNT(DISTINCT rv.response_id) AS n
+         FROM collection_response_values rv
+         JOIN collection_responses cr ON cr.id = rv.response_id
+         WHERE cr.collection_id = ?
+           AND rv.field_id = ?
+           AND rv.value IN (${locationPh})`
+      )
+      .get(collectionId, locationFieldId, ...locationNames) as unknown as { n: number }
+    result.set(collectionId, row.n)
+  }
+
+  return result
+}
+
 function sanitizeAttachmentReference(attachment: AttachmentReference): AttachmentReference {
   return {
     attachmentId: attachment.attachmentId,
@@ -256,12 +380,15 @@ interface CollectionBody {
   category?: string
   dateDue?: string
   coverPhotoUrl?: string
+  coverPhotoAssetId?: number | null
   logoUrl?: string
   instructions?: string
   instructionsDocUrl?: string
   anonymous?: boolean
   allowSubmissionEdits?: boolean
   submissionEditWindowHours?: number
+  workflowDefinition?: ApprovalWorkflowDefinition | null
+  sourceTemplateCollectionId?: number | null
   locationId?: number | null
   fields?: FieldInput[]
 }
@@ -299,6 +426,55 @@ function resolveSubmissionEditSettings(body: CollectionBody): {
 function normalizeCategory(category: string | undefined): string | null {
   const normalized = category?.trim() ?? ''
   return normalized ? normalized : null
+}
+
+function buildCollectionCoverPhotoUrl(slug: string, coverPhotoAssetId: number | null, coverPhotoUrl: string | null): string | null {
+  if (coverPhotoAssetId) {
+    return `/api/collections/public/${slug}/cover-photo`
+  }
+  return coverPhotoUrl
+}
+
+function resolveCoverPhotoSelection(
+  db: ReturnType<typeof getDb>,
+  slug: string,
+  organizationId: number,
+  body: CollectionBody,
+): { coverPhotoAssetId: number | null; coverPhotoUrl: string | null } {
+  const assetIdRaw = body.coverPhotoAssetId
+  if (assetIdRaw === undefined) {
+    return {
+      coverPhotoAssetId: null,
+      coverPhotoUrl: body.coverPhotoUrl?.trim() ?? null,
+    }
+  }
+
+  if (assetIdRaw === null) {
+    return {
+      coverPhotoAssetId: null,
+      coverPhotoUrl: body.coverPhotoUrl?.trim() ?? null,
+    }
+  }
+
+  const assetId = Number(assetIdRaw)
+  if (!Number.isInteger(assetId) || assetId < 1) {
+    throw new Error('coverPhotoAssetId must be a positive integer')
+  }
+
+  const asset = db.prepare(`
+    SELECT id, organization_id
+    FROM gallery_assets
+    WHERE id = ?
+  `).get(assetId) as { id: number; organization_id: number } | undefined
+
+  if (!asset || asset.organization_id !== organizationId) {
+    throw new Error('Selected gallery image does not exist in the chosen organization')
+  }
+
+  return {
+    coverPhotoAssetId: asset.id,
+    coverPhotoUrl: buildCollectionCoverPhotoUrl(slug, asset.id, null),
+  }
 }
 
 function ensureCategoryExists(category: string | null): string | null {
@@ -403,9 +579,13 @@ function toApiCollection(
     createdByName: c.creator_name ?? null,
     dateDue: c.date_due,
     coverPhotoUrl: c.cover_photo_url,
+    coverPhotoAssetId: c.cover_photo_asset_id,
     logoUrl: c.logo_url,
     instructions: c.instructions,
     instructionsDocUrl: c.instructions_doc_url,
+    workflowDefinition: parseWorkflowDefinition(c.workflow_definition),
+    sourceTemplateCollectionId: c.source_template_collection_id,
+    templateUsageCount: c.template_usage_count ?? 0,
     activeVersionId: c.active_version_id,
     currentVersionNumber: c.active_version_number ?? null,
     currentVersionStatus: c.active_version_status ?? null,
@@ -883,6 +1063,7 @@ function normaliseDbFields(fields: DbField[], colsByField: Map<number, DbTableCo
 const COL_SELECT = `
   SELECT c.*, u.name AS creator_name, o.name AS organization_name,
     o.description AS organization_description,
+         (SELECT COUNT(*) FROM collections child WHERE child.source_template_collection_id = c.id) AS template_usage_count,
          cv.version_number AS active_version_number,
          cv.status AS active_version_status
   FROM collections c
@@ -952,6 +1133,30 @@ router.get('/public/:slug', optionalAuthenticateToken, (req: Request, res: Respo
   // Strip staff-only fields — the fill page is for submitters, not staff
   const publicFields = allFields.filter(f => !f.staff_only)
   res.json(toApiCollection(c, publicFields, colsByField))
+})
+
+router.get('/public/:slug/cover-photo', async (req: Request, res: Response) => {
+  const db = getDb()
+  const row = db.prepare(`
+    SELECT c.status, ga.drive_file_id
+    FROM collections c
+    JOIN gallery_assets ga ON ga.id = c.cover_photo_asset_id
+    WHERE c.slug = ?
+  `).get(req.params.slug) as { status: 'draft' | 'published'; drive_file_id: string } | undefined
+
+  if (!row || row.status !== 'published') {
+    res.status(404).json({ error: 'Cover photo not found' })
+    return
+  }
+
+  try {
+    const file = await downloadDriveFile(row.drive_file_id)
+    res.setHeader('Content-Type', file.mimeType)
+    res.setHeader('Cache-Control', 'public, max-age=300')
+    file.stream.pipe(res)
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message || 'Failed to load cover photo' })
+  }
 })
 
 router.post('/public/:slug/attachments', optionalAuthenticateToken, attachmentUpload.single('file'), async (req: Request, res: Response) => {
@@ -1284,7 +1489,7 @@ router.get('/attachments/:attachmentId/download', authenticateToken, async (req:
 router.post('/public/:slug/responses', optionalAuthenticateToken, (req: Request, res: Response) => {
   const db = getDb()
   const col = db
-    .prepare('SELECT id, title, anonymous, status, active_version_id, allow_submission_edits, submission_edit_window_hours FROM collections WHERE slug = ?')
+    .prepare('SELECT id, title, anonymous, status, active_version_id, allow_submission_edits, submission_edit_window_hours, organization_id, workflow_definition FROM collections WHERE slug = ?')
     .get(req.params.slug) as unknown as {
       id: number
       title: string
@@ -1293,6 +1498,8 @@ router.post('/public/:slug/responses', optionalAuthenticateToken, (req: Request,
       active_version_id: number | null
       allow_submission_edits: number
       submission_edit_window_hours: number | null
+      organization_id: number | null
+      workflow_definition: string | null
     } | undefined
 
   if (!col) {
@@ -1366,6 +1573,7 @@ router.post('/public/:slug/responses', optionalAuthenticateToken, (req: Request,
     const responseId = r.lastInsertRowid as number
 
     if (body.values?.length) {
+      const storedValuesForWorkflow: Array<{ fieldKey: string; value: string | null }> = []
       for (const val of body.values) {
         const field = fieldById.get(val.fieldId)
         let storedValue = val.value ?? null
@@ -1424,7 +1632,31 @@ router.post('/public/:slug/responses', optionalAuthenticateToken, (req: Request,
           `INSERT INTO collection_response_values (response_id, field_id, value)
            VALUES (?, ?, ?)`
         ).run(responseId, val.fieldId, storedValue)
+
+        if (field?.field_key) {
+          storedValuesForWorkflow.push({ fieldKey: field.field_key, value: storedValue })
+        }
       }
+
+      initializeWorkflowForResponse({
+        collectionId: col.id,
+        responseId,
+        organizationId: col.organization_id,
+        collectionTitle: col.title,
+        workflowDefinition: parseWorkflowDefinition(col.workflow_definition),
+        fieldValues: storedValuesForWorkflow,
+        db,
+      })
+    } else {
+      initializeWorkflowForResponse({
+        collectionId: col.id,
+        responseId,
+        organizationId: col.organization_id,
+        collectionTitle: col.title,
+        workflowDefinition: parseWorkflowDefinition(col.workflow_definition),
+        fieldValues: [],
+        db,
+      })
     }
 
     db.exec('COMMIT')
@@ -1515,7 +1747,7 @@ router.post('/public/:slug/responses', optionalAuthenticateToken, (req: Request,
 })
 
 router.post('/:id/seed', authenticateToken, (req: Request, res: Response) => {
-  if (req.user?.role !== 'administrator') {
+  if (req.user?.role !== 'administrator' && req.user?.role !== 'super_admin') {
     res.status(403).json({ error: 'Administrator access required' })
     return
   }
@@ -1637,10 +1869,7 @@ router.get('/', authenticateToken, (_req: Request, res: Response) => {
   const ids = cols.map(c => c.id)
   const ph = ids.map(() => '?').join(',')
 
-  const responseCounts = db
-    .prepare(`SELECT collection_id, COUNT(*) AS n FROM collection_responses WHERE collection_id IN (${ph}) GROUP BY collection_id`)
-    .all(...ids) as unknown as Array<{ collection_id: number; n: number }>
-  const responseCountMap = new Map(responseCounts.map(r => [r.collection_id, r.n]))
+  const responseCountMap = getVisibleResponseCountMap(db, context, ids)
 
   const customTableFlags = db
     .prepare(`SELECT collection_id, COUNT(*) AS ct FROM collection_fields WHERE collection_id IN (${ph}) AND type = 'custom_table' GROUP BY collection_id`)
@@ -1703,11 +1932,25 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
   let organization: { id: number; name: string }
   let category: string | null
   let editSettings: { allowSubmissionEdits: boolean; submissionEditWindowHours: number | null }
+  let sourceTemplateCollectionId: number | null = null
+  let coverSelection: { coverPhotoAssetId: number | null; coverPhotoUrl: string | null }
 
   try {
     organization = resolveCollectionOrganization(context, body.organizationId)
     category = ensureCategoryExists(normalizeCategory(body.category))
     editSettings = resolveSubmissionEditSettings(body)
+    if (body.sourceTemplateCollectionId !== null && body.sourceTemplateCollectionId !== undefined) {
+      const templateId = Number(body.sourceTemplateCollectionId)
+      if (!Number.isInteger(templateId) || templateId < 1) {
+        throw new Error('sourceTemplateCollectionId must be a positive integer')
+      }
+      const template = fetchAccessibleCollectionById(templateId, context)
+      if (!template) {
+        throw new Error('Selected template collection does not exist')
+      }
+      sourceTemplateCollectionId = template.id
+    }
+    coverSelection = resolveCoverPhotoSelection(db, slug, organization.id, body)
   } catch (err) {
     res.status(400).json({ error: (err as Error).message })
     return
@@ -1720,9 +1963,9 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
       .prepare(
         `INSERT INTO collections
            (slug, title, status, description, category, created_by, date_due, cover_photo_url,
-            logo_url, instructions, instructions_doc_url, organization_id, anonymous, allow_submission_edits,
+            cover_photo_asset_id, logo_url, instructions, instructions_doc_url, workflow_definition, source_template_collection_id, organization_id, anonymous, allow_submission_edits,
             submission_edit_window_hours, active_version_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
       )
       .run(
         slug,
@@ -1732,10 +1975,13 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
         category,
         req.user!.sub,
         body.dateDue ?? null,
-        body.coverPhotoUrl ?? null,
+        coverSelection.coverPhotoUrl,
+        coverSelection.coverPhotoAssetId,
         body.logoUrl ?? null,
         body.instructions ?? null,
         body.instructionsDocUrl ?? null,
+        serializeWorkflowDefinition(body.workflowDefinition),
+        sourceTemplateCollectionId,
         organization.id,
         body.anonymous ? 1 : 0,
         editSettings.allowSubmissionEdits ? 1 : 0,
@@ -1891,6 +2137,7 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
   let organization: { id: number; name: string }
   let category: string | null
   let editSettings: { allowSubmissionEdits: boolean; submissionEditWindowHours: number | null }
+  let coverSelection: { coverPhotoAssetId: number | null; coverPhotoUrl: string | null }
 
   try {
     organization = resolveCollectionOrganization(context, body.organizationId)
@@ -1906,6 +2153,13 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
 
   if (!existingCollection) {
     res.status(404).json({ error: 'Collection not found' })
+    return
+  }
+
+  try {
+    coverSelection = resolveCoverPhotoSelection(getDb(), existingCollection.slug, organization.id, body)
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message })
     return
   }
 
@@ -1943,7 +2197,7 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
     db.prepare(
       `UPDATE collections
          SET title = ?, status = ?, description = ?, category = ?, date_due = ?, cover_photo_url = ?,
-           logo_url = ?, instructions = ?, instructions_doc_url = ?, organization_id = ?, anonymous = ?, allow_submission_edits = ?,
+          cover_photo_asset_id = ?, logo_url = ?, instructions = ?, instructions_doc_url = ?, workflow_definition = ?, organization_id = ?, anonymous = ?, allow_submission_edits = ?,
            submission_edit_window_hours = ?, active_version_id = ?,
            updated_at = datetime('now')
        WHERE id = ?`
@@ -1953,10 +2207,12 @@ router.put('/:id', authenticateToken, (req: Request, res: Response) => {
       body.description?.trim() ?? null,
       category,
       body.dateDue ?? null,
-      body.coverPhotoUrl ?? null,
+      coverSelection.coverPhotoUrl,
+      coverSelection.coverPhotoAssetId,
       body.logoUrl ?? null,
       body.instructions ?? null,
       body.instructionsDocUrl ?? null,
+      serializeWorkflowDefinition(body.workflowDefinition),
       organization.id,
       body.anonymous ? 1 : 0,
       editSettings.allowSubmissionEdits ? 1 : 0,
@@ -2096,9 +2352,11 @@ router.post('/:id/versions', authenticateToken, (req: Request, res: Response) =>
 
   const requestedStatus = resolveRequestedStatus(body)
   let category: string | null
+  let coverSelection: { coverPhotoAssetId: number | null; coverPhotoUrl: string | null }
 
   try {
     category = ensureCategoryExists(normalizeCategory(body.category))
+    coverSelection = resolveCoverPhotoSelection(db, collection.slug, collection.organization_id, body)
   } catch (err) {
     res.status(400).json({ error: (err as Error).message })
     return
@@ -2111,7 +2369,7 @@ router.post('/:id/versions', authenticateToken, (req: Request, res: Response) =>
     db.prepare(
       `UPDATE collections
          SET title = ?, status = ?, description = ?, category = ?, date_due = ?, cover_photo_url = ?,
-           logo_url = ?, instructions = ?, instructions_doc_url = ?, anonymous = ?, active_version_id = ?,
+          cover_photo_asset_id = ?, logo_url = ?, instructions = ?, instructions_doc_url = ?, workflow_definition = ?, anonymous = ?, active_version_id = ?,
            updated_at = datetime('now')
        WHERE id = ?`
     ).run(
@@ -2120,10 +2378,12 @@ router.post('/:id/versions', authenticateToken, (req: Request, res: Response) =>
       body.description?.trim() ?? null,
       category,
       body.dateDue ?? null,
-      body.coverPhotoUrl ?? null,
+      coverSelection.coverPhotoUrl,
+      coverSelection.coverPhotoAssetId,
       body.logoUrl ?? null,
       body.instructions ?? null,
       body.instructionsDocUrl ?? null,
+      serializeWorkflowDefinition(body.workflowDefinition),
       body.anonymous ? 1 : 0,
       versionId,
       id
@@ -2258,6 +2518,23 @@ router.delete('/:id', authenticateToken, (req: Request, res: Response) => {
   const exists = fetchAccessibleCollectionById(id, context)
   if (!exists) {
     res.status(404).json({ error: 'Collection not found' })
+    return
+  }
+
+  const responseCountRow = db
+    .prepare('SELECT COUNT(*) AS count FROM collection_responses WHERE collection_id = ?')
+    .get(id) as { count: number }
+  const templateUsageRow = db
+    .prepare('SELECT COUNT(*) AS count FROM collections WHERE source_template_collection_id = ?')
+    .get(id) as { count: number }
+
+  if (responseCountRow.count > 0) {
+    res.status(409).json({ error: 'This template cannot be deleted because it has responses.' })
+    return
+  }
+
+  if (templateUsageRow.count > 0) {
+    res.status(409).json({ error: 'This template cannot be deleted because other collections were created from it.' })
     return
   }
 
@@ -2415,12 +2692,17 @@ router.get('/:id/responses', authenticateToken, (req: Request, res: Response) =>
     valsByResponse.set(v.response_id, arr)
   }
 
+  responses.forEach((response) => {
+    ensureWorkflowInstanceForResponse(db, collection, response.id)
+  })
+
   res.json(
     responses.map(r => ({
       id: r.id,
       respondentName: r.respondent_name,
       respondentEmail: r.respondent_email,
       submittedAt: r.submitted_at,
+      workflow: getWorkflowSummaryForResponse(r.id, db),
       values: (valsByResponse.get(r.id) ?? []).map(v => ({
         fieldId: v.field_id,
         value: v.value,
@@ -2526,6 +2808,97 @@ router.put('/:id/responses/:responseId/staff-fields', authenticateToken, (req: R
   } catch (err) {
     console.error('[collections] staff-fields upsert:', err)
     res.status(500).json({ error: 'Failed to save staff fields' })
+  }
+})
+
+router.get('/:id/responses/:responseId/workflow', authenticateToken, (req: Request, res: Response): void => {
+  const id = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  if (isNaN(id) || isNaN(responseId)) {
+    res.status(400).json({ error: 'Invalid ID' })
+    return
+  }
+
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(id, context)
+    if (!collection) {
+      res.status(404).json({ error: 'Collection not found' })
+      return
+    }
+
+    const responseRow = db
+      .prepare('SELECT id FROM collection_responses WHERE id = ? AND collection_id = ?')
+      .get(responseId, id) as { id: number } | undefined
+    if (!responseRow) {
+      res.status(404).json({ error: 'Response not found' })
+      return
+    }
+
+    ensureWorkflowInstanceForResponse(db, collection, responseId)
+
+    res.json(getWorkflowSummaryForResponse(responseId, db))
+  } catch (err) {
+    console.error('[collections] get workflow:', err)
+    res.status(500).json({ error: 'Failed to load workflow' })
+  }
+})
+
+router.post('/:id/responses/:responseId/workflow/:decision(approve|reject)', authenticateToken, (req: Request, res: Response): void => {
+  const id = parseInt(req.params.id, 10)
+  const responseId = parseInt(req.params.responseId, 10)
+  if (isNaN(id) || isNaN(responseId)) {
+    res.status(400).json({ error: 'Invalid ID' })
+    return
+  }
+
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(id, context)
+    if (!collection) {
+      res.status(404).json({ error: 'Collection not found' })
+      return
+    }
+
+    const responseRow = db
+      .prepare('SELECT id FROM collection_responses WHERE id = ? AND collection_id = ?')
+      .get(responseId, id) as { id: number } | undefined
+    if (!responseRow) {
+      res.status(404).json({ error: 'Response not found' })
+      return
+    }
+
+    const actor = db.prepare('SELECT name FROM users WHERE id = ?').get(context.id) as { name: string | null } | undefined
+    const summary = actOnWorkflowStage({
+      responseId,
+      userId: context.id,
+      actorName: actor?.name ?? null,
+      decision: req.params.decision === 'reject' ? 'rejected' : 'approved',
+      comment: (req.body as { comment?: string }).comment ?? null,
+      db,
+    })
+
+    if (!summary) {
+      res.status(404).json({ error: 'Workflow not found' })
+      return
+    }
+
+    res.json(summary)
+  } catch (err) {
+    console.error('[collections] act workflow:', err)
+    res.status(500).json({ error: 'Failed to update workflow' })
   }
 })
 

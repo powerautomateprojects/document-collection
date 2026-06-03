@@ -110,6 +110,7 @@ function reorderCollectionsWithinCategory(
 interface CollectionCardProps {
   collection: Collection
   deleting: number | null
+  canManage: boolean
   onViewForm: (slug: string) => void
   onEdit: (id: number) => void
   onDelete: (collection: Collection) => void
@@ -119,6 +120,7 @@ interface CollectionCardProps {
 function SortableCollectionCard({
   collection,
   deleting,
+  canManage,
   onViewForm,
   onEdit,
   onDelete,
@@ -245,23 +247,27 @@ function SortableCollectionCard({
             <Eye size={13} />
             Test Form
           </button>
-          <button
-            onClick={() => onEdit(collection.id)}
-            title="Edit Form"
-            className="flex items-center gap-1 text-[11px] text-[#64748B] hover:text-[#2563EB] transition-colors"
-          >
-            <Edit2 size={13} />
-            Edit Form
-          </button>
-          <button
-            onClick={() => onDelete(collection)}
-            disabled={deleting === collection.id}
-            title="Delete"
-            className="ml-auto flex items-center gap-1 text-[11px] text-[#64748B] hover:text-red-500 transition-colors disabled:opacity-40"
-          >
-            <Trash2 size={13} />
-            {deleting === collection.id ? 'Deleting…' : 'Delete'}
-          </button>
+          {canManage && (
+            <>
+              <button
+                onClick={() => onEdit(collection.id)}
+                title="Edit Form"
+                className="flex items-center gap-1 text-[11px] text-[#64748B] hover:text-[#2563EB] transition-colors"
+              >
+                <Edit2 size={13} />
+                Edit Form
+              </button>
+              <button
+                onClick={() => onDelete(collection)}
+                disabled={deleting === collection.id}
+                title="Delete"
+                className="ml-auto flex items-center gap-1 text-[11px] text-[#64748B] hover:text-red-500 transition-colors disabled:opacity-40"
+              >
+                <Trash2 size={13} />
+                {deleting === collection.id ? 'Deleting…' : 'Delete'}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -290,6 +296,7 @@ export default function CollectionsPage() {
   const [activeCategoryTab, setActiveCategoryTab] = useState<string | null>(null)
   const [templateLibraryOpen, setTemplateLibraryOpen] = useState(false)
   const latestOrderRef = useRef<string>('[]')
+  const canManageCollections = user?.role === 'super_admin' || user?.role === 'administrator' || user?.role === 'team_manager'
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: {
       distance: 8,
@@ -447,6 +454,36 @@ export default function CollectionsPage() {
     navigate(`/collections/new?templateId=${collectionId}`)
   }
 
+  async function handleDeleteTemplate(collection: Collection) {
+    const responseCount = collection.responseCount ?? 0
+    const usageCount = collection.templateUsageCount ?? 0
+
+    if (responseCount > 0 || usageCount > 0) {
+      showToast(
+        responseCount > 0
+          ? 'Template cannot be deleted because it has responses.'
+          : 'Template cannot be deleted because other collections were created from it.',
+        'error',
+      )
+      return
+    }
+
+    if (!window.confirm(`Delete template "${collection.title}"?`)) {
+      return
+    }
+
+    setDeleting(collection.id)
+    try {
+      await deleteCollection(collection.id)
+      setCollections(prev => prev.filter(item => item.id !== collection.id))
+      showToast('Template deleted', 'success')
+    } catch (err) {
+      showToast((err as Error).message, 'error')
+    } finally {
+      setDeleting(null)
+    }
+  }
+
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
     if (!over || active.id === over.id || !activeCategoryTab) {
@@ -558,17 +595,39 @@ export default function CollectionsPage() {
                               <ClipboardList size={10} />
                               {collection.responseCount ?? 0} response{collection.responseCount !== 1 ? 's' : ''}
                             </span>
+                            <span className="flex items-center gap-1">
+                              <Copy size={10} />
+                              Used by {collection.templateUsageCount ?? 0} collection{(collection.templateUsageCount ?? 0) !== 1 ? 's' : ''}
+                            </span>
                           </div>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => handleUseTemplate(collection.id)}
-                          className="inline-flex items-center justify-center gap-1.5 rounded bg-[#2563EB] px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
-                        >
-                          <Copy size={14} />
-                          Use Template
-                        </button>
+                        <div className="flex items-center gap-2 self-start">
+                          <button
+                            type="button"
+                            onClick={() => handleUseTemplate(collection.id)}
+                            className="inline-flex items-center justify-center gap-1.5 rounded bg-[#2563EB] px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+                          >
+                            <Copy size={14} />
+                            Use Template
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteTemplate(collection)}
+                            disabled={deleting === collection.id || (collection.responseCount ?? 0) > 0 || (collection.templateUsageCount ?? 0) > 0}
+                            className="inline-flex items-center justify-center gap-1.5 rounded border border-[#FCA5A5] px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:hover:bg-transparent transition-colors"
+                            title={
+                              (collection.responseCount ?? 0) > 0
+                                ? 'Cannot delete a template that has responses'
+                                : (collection.templateUsageCount ?? 0) > 0
+                                  ? 'Cannot delete a template that is used by other collections'
+                                  : 'Delete template'
+                            }
+                          >
+                            <Trash2 size={14} />
+                            {deleting === collection.id ? 'Deleting…' : 'Delete'}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -588,21 +647,25 @@ export default function CollectionsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => setTemplateLibraryOpen(true)}
-            className="flex items-center gap-2 border border-[#CBD5E1] dark:border-[#334155] text-[#475569] dark:text-[#94A3B8] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] text-sm font-medium px-4 py-2 rounded transition-colors"
-          >
-            <Copy size={15} />
-            Template Library
-          </button>
-          <button
-            onClick={() => navigate('/collections/new')}
-            className="flex items-center gap-2 bg-[#2563EB] hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
-          >
-            <Plus size={15} />
-            New Collection
-          </button>
+          {canManageCollections && (
+            <>
+              <button
+                type="button"
+                onClick={() => setTemplateLibraryOpen(true)}
+                className="flex items-center gap-2 border border-[#CBD5E1] dark:border-[#334155] text-[#475569] dark:text-[#94A3B8] hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A] text-sm font-medium px-4 py-2 rounded transition-colors"
+              >
+                <Copy size={15} />
+                Template Library
+              </button>
+              <button
+                onClick={() => navigate('/collections/new')}
+                className="flex items-center gap-2 bg-[#2563EB] hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+              >
+                <Plus size={15} />
+                New Collection
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -660,6 +723,7 @@ export default function CollectionsPage() {
                 key={collection.id}
                 collection={collection}
                 deleting={deleting}
+                canManage={canManageCollections}
                 onViewForm={viewForm}
                 onEdit={(id) => navigate(`/collections/${id}/edit`)}
                 onDelete={handleDelete}

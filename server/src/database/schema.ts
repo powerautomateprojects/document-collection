@@ -88,9 +88,12 @@ export function createSchema(db: AppDatabase): void {
       created_by           INTEGER NOT NULL REFERENCES users(id),
       date_due             TEXT,
       cover_photo_url      TEXT,
+      cover_photo_asset_id INTEGER REFERENCES gallery_assets(id) ON DELETE SET NULL,
       logo_url             TEXT,
       instructions         TEXT,
       instructions_doc_url TEXT,
+      workflow_definition  TEXT,
+      source_template_collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL,
       organization_id      INTEGER NOT NULL REFERENCES organizations(id),
       active_version_id    INTEGER,
       anonymous            INTEGER NOT NULL DEFAULT 0,
@@ -98,6 +101,24 @@ export function createSchema(db: AppDatabase): void {
       submission_edit_window_hours INTEGER,
       created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
       updated_at           TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS gallery_assets (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      organization_id       INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      name                  TEXT    NOT NULL,
+      alt_text              TEXT,
+      tags                  TEXT,
+      mime_type             TEXT    NOT NULL,
+      size_bytes            INTEGER NOT NULL DEFAULT 0,
+      drive_file_id         TEXT    NOT NULL UNIQUE,
+      drive_web_view_url    TEXT,
+      drive_download_url    TEXT,
+      created_by_user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
     );
   `)
 
@@ -161,6 +182,14 @@ export function createSchema(db: AppDatabase): void {
       submitted_at     TEXT    NOT NULL DEFAULT (datetime('now'))
     );
   `)
+
+  if (!tableHasColumn(db, 'collections', 'workflow_definition')) {
+    db.exec(`ALTER TABLE collections ADD COLUMN workflow_definition TEXT`)
+  }
+
+  if (!tableHasColumn(db, 'collections', 'source_template_collection_id')) {
+    db.exec(`ALTER TABLE collections ADD COLUMN source_template_collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL`)
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS collection_response_values (
@@ -399,6 +428,11 @@ export function createSchema(db: AppDatabase): void {
   `)
 
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_collections_source_template
+      ON collections(source_template_collection_id);
+  `)
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS ticket_response_values (
       id                 INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_response_id INTEGER NOT NULL REFERENCES ticket_responses(id) ON DELETE CASCADE,
@@ -423,6 +457,100 @@ export function createSchema(db: AppDatabase): void {
       changed_by_name      TEXT,
       changed_at           TEXT NOT NULL DEFAULT (datetime('now'))
     );
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_workflow_instances (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      collection_id         INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      response_id           INTEGER NOT NULL REFERENCES collection_responses(id) ON DELETE CASCADE,
+      status                TEXT    NOT NULL DEFAULT 'not_started'
+                                   CHECK(status IN ('not_started', 'pending', 'approved', 'rejected', 'cancelled', 'escalated')),
+      active_stage_order    INTEGER,
+      active_stage_name     TEXT,
+      started_at            TEXT,
+      completed_at          TEXT,
+      last_reminder_at      TEXT,
+      last_escalated_at     TEXT,
+      created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(response_id)
+    );
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_workflow_stage_instances (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      workflow_instance_id  INTEGER NOT NULL REFERENCES approval_workflow_instances(id) ON DELETE CASCADE,
+      stage_id              TEXT    NOT NULL,
+      stage_name            TEXT    NOT NULL,
+      stage_order           INTEGER NOT NULL,
+      approval_mode         TEXT    NOT NULL DEFAULT 'all'
+                                   CHECK(approval_mode IN ('all', 'any')),
+      status                TEXT    NOT NULL DEFAULT 'pending'
+                                   CHECK(status IN ('pending', 'approved', 'rejected', 'skipped', 'escalated')),
+      conditions_json       TEXT,
+      reminder_after_hours  INTEGER,
+      escalation_after_hours INTEGER,
+      started_at            TEXT,
+      due_at                TEXT,
+      reminded_at           TEXT,
+      escalated_at          TEXT,
+      acted_at              TEXT,
+      acted_by              INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      action_comment        TEXT,
+      created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(workflow_instance_id, stage_order)
+    );
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_workflow_approver_instances (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      stage_instance_id     INTEGER NOT NULL REFERENCES approval_workflow_stage_instances(id) ON DELETE CASCADE,
+      assignment_type       TEXT    NOT NULL CHECK(assignment_type IN ('user', 'role')),
+      assignment_value      TEXT    NOT NULL,
+      user_id               INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      status                TEXT    NOT NULL DEFAULT 'pending'
+                                   CHECK(status IN ('pending', 'approved', 'rejected', 'skipped', 'escalated')),
+      notified_at           TEXT,
+      acted_at              TEXT,
+      acted_by              INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      action_comment        TEXT,
+      created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_workflow_history (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      workflow_instance_id  INTEGER NOT NULL REFERENCES approval_workflow_instances(id) ON DELETE CASCADE,
+      stage_instance_id     INTEGER REFERENCES approval_workflow_stage_instances(id) ON DELETE SET NULL,
+      approver_instance_id  INTEGER REFERENCES approval_workflow_approver_instances(id) ON DELETE SET NULL,
+      event_type            TEXT    NOT NULL CHECK(event_type IN ('workflow_started', 'stage_started', 'approved', 'rejected', 'reminder_sent', 'escalated', 'workflow_completed', 'workflow_cancelled')),
+      actor_user_id         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      actor_name            TEXT,
+      message               TEXT,
+      metadata              TEXT,
+      created_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_approval_workflow_instances_response
+      ON approval_workflow_instances(response_id);
+  `)
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_approval_workflow_stage_instances_active
+      ON approval_workflow_stage_instances(status, due_at, started_at);
+  `)
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_approval_workflow_approver_instances_stage
+      ON approval_workflow_approver_instances(stage_instance_id, status);
   `)
 }
 

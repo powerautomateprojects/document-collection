@@ -67,10 +67,87 @@ export type FieldType =
 export type ColType = 'text' | 'number' | 'date' | 'checkbox' | 'list'
 export type CollectionStatus = 'draft' | 'published'
 export type FieldDisplayStyle = 'radio' | 'dropdown' | 'stars' | 'numbers'
+export type ApprovalAssignmentType = 'user' | 'role'
+export type ApprovalConditionOperator = 'equals' | 'not_equals' | 'greater_than' | 'greater_or_equal' | 'less_than' | 'less_or_equal' | 'contains' | 'not_empty' | 'is_empty'
+export type ApprovalWorkflowStatus = 'not_started' | 'pending' | 'approved' | 'rejected' | 'cancelled' | 'escalated'
+export type ApprovalStageStatus = 'pending' | 'approved' | 'rejected' | 'skipped' | 'escalated'
 
 export interface FieldBranchRule {
   value: string
   targetFieldKey: string | null
+}
+
+export interface ApprovalWorkflowAssignee {
+  type: ApprovalAssignmentType
+  value: string
+}
+
+export interface ApprovalWorkflowCondition {
+  fieldKey: string
+  operator: ApprovalConditionOperator
+  value?: string | number | boolean | null
+}
+
+export interface ApprovalWorkflowConditionGroup {
+  match: 'all' | 'any'
+  conditions: ApprovalWorkflowCondition[]
+}
+
+export interface ApprovalWorkflowStageDefinition {
+  id: string
+  name: string
+  approvalMode: 'all' | 'any'
+  assignees: ApprovalWorkflowAssignee[]
+  conditions?: ApprovalWorkflowConditionGroup | null
+  reminderAfterHours?: number | null
+  escalationAfterHours?: number | null
+  escalationAssignees?: ApprovalWorkflowAssignee[] | null
+}
+
+export interface ApprovalWorkflowDefinition {
+  enabled: boolean
+  stages: ApprovalWorkflowStageDefinition[]
+}
+
+export interface ApprovalWorkflowApproverSummary {
+  id: number
+  assignmentType: ApprovalAssignmentType
+  assignmentValue: string
+  userId: number | null
+  userName: string | null
+  userEmail: string | null
+  status: ApprovalStageStatus
+  notifiedAt: string | null
+  actedAt: string | null
+  actedBy: number | null
+  actionComment: string | null
+}
+
+export interface ApprovalWorkflowStageSummary {
+  id: number
+  stageId: string
+  stageName: string
+  stageOrder: number
+  approvalMode: 'all' | 'any'
+  status: ApprovalStageStatus
+  startedAt: string | null
+  dueAt: string | null
+  remindedAt: string | null
+  escalatedAt: string | null
+  actedAt: string | null
+  actedBy: number | null
+  actionComment: string | null
+  approvers: ApprovalWorkflowApproverSummary[]
+}
+
+export interface ApprovalWorkflowSummary {
+  id: number
+  status: ApprovalWorkflowStatus
+  activeStageOrder: number | null
+  activeStageName: string | null
+  startedAt: string | null
+  completedAt: string | null
+  stages: ApprovalWorkflowStageSummary[]
 }
 
 export interface TableColumn {
@@ -111,9 +188,13 @@ export interface Collection {
   createdByName: string | null
   dateDue: string | null
   coverPhotoUrl: string | null
+  coverPhotoAssetId?: number | null
   logoUrl: string | null
   instructions: string | null
   instructionsDocUrl: string | null
+  workflowDefinition?: ApprovalWorkflowDefinition | null
+  sourceTemplateCollectionId?: number | null
+  templateUsageCount?: number
   activeVersionId?: number | null
   currentVersionNumber?: number | null
   currentVersionStatus?: CollectionStatus | null
@@ -137,6 +218,22 @@ export interface CollectionVersion {
   isActive: boolean
 }
 
+export interface GalleryAsset {
+  id: number
+  organizationId: number
+  organizationName: string | null
+  name: string
+  altText: string | null
+  tags: string[]
+  mimeType: string
+  sizeBytes: number
+  usageCount: number
+  fileUrl: string
+  createdByUserId: number | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface AttachmentReference {
   attachmentId: number
   fileName: string
@@ -152,6 +249,7 @@ export interface CollectionResponse {
   respondentName: string | null
   respondentEmail: string | null
   submittedAt: string
+  workflow?: ApprovalWorkflowSummary | null
   values: { fieldId: number; value: string | null; fieldLabel?: string | null; staffUpdatedByName?: string | null; staffUpdatedAt?: string | null }[]
 }
 
@@ -262,6 +360,8 @@ export interface AppNotification {
   userId: number | null
   collectionId: number | null
   collectionSlug: string | null
+  targetType: 'collection' | 'submission' | 'user' | 'organization' | 'system' | null
+  targetId: number | null
   type: 'due_soon' | 'overdue' | 'system'
   title: string
   message: string

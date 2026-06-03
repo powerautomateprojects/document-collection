@@ -47,6 +47,7 @@ export default function LoginPage() {
 
   const [existingUsers, setExistingUsers] = useState<User[]>([])
   const [loadingUsers, setLoadingUsers] = useState(true)
+  const [userLoadError, setUserLoadError] = useState<string | null>(null)
 
   const sortedUsers = useMemo(
     () => [...existingUsers].sort((a, b) => a.name.localeCompare(b.name) || a.email.localeCompare(b.email)),
@@ -68,6 +69,35 @@ export default function LoginPage() {
       .catch(() => { /* keep default counts */ })
   }, [])
 
+  const loadUsers = async () => {
+    setLoadingUsers(true)
+    setUserLoadError(null)
+
+    try {
+      const res = await fetch('/api/auth/users')
+      const data = await res.json() as User[] | { error?: string }
+      if (!res.ok || !Array.isArray(data)) {
+        throw new Error('Unable to load users')
+      }
+
+      setExistingUsers(data)
+      setSelectedUserId(currentUserId => {
+        if (data.some(user => String(user.id) === currentUserId)) {
+          return currentUserId
+        }
+
+        return data.length > 0 ? String(data[0].id) : ''
+      })
+    } catch (err) {
+      console.error('[LoginPage] Failed to load users:', err)
+      setExistingUsers([])
+      setSelectedUserId('')
+      setUserLoadError('Unable to load user profiles. Please refresh once the backend is available.')
+    } finally {
+      setLoadingUsers(false)
+    }
+  }
+
   useEffect(() => {
     getPublicSetting('login_message')
       .then(setLoginMessage)
@@ -76,27 +106,7 @@ export default function LoginPage() {
       .then(setLoginSubtitle)
       .catch(() => { /* keep default */ })
 
-    fetch('/api/auth/users')
-      .then(async res => {
-        const data = await res.json() as User[] | { error?: string }
-        if (!res.ok || !Array.isArray(data)) {
-          throw new Error('Unable to load users')
-        }
-
-        setExistingUsers(data)
-        setSelectedUserId(currentUserId => {
-          if (data.some(user => String(user.id) === currentUserId)) {
-            return currentUserId
-          }
-
-          return data.length > 0 ? String(data[0].id) : ''
-        })
-      })
-      .catch(() => {
-        setExistingUsers([])
-        setSelectedUserId('')
-      })
-      .finally(() => setLoadingUsers(false))
+    void loadUsers()
   }, [])
 
   const [error, setError] = useState<string | null>(null)
@@ -237,6 +247,20 @@ export default function LoginPage() {
               </option>
             ))}
           </select>
+
+          {userLoadError && (
+            <div className="mb-4 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {userLoadError}
+              <button
+                type="button"
+                onClick={loadUsers}
+                disabled={loadingUsers}
+                className="ml-2 underline"
+              >
+                Retry
+              </button>
+            </div>
+          )}
 
           {!loadingUsers && sortedUsers.length > 0 && (
             <p className="text-xs text-[#64748B] dark:text-[#94A3B8] mb-4">

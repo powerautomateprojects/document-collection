@@ -1,7 +1,7 @@
 import { parseAttachmentValue } from '../utils/attachmentValue'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Calendar, ClipboardList, Clipboard, LayoutGrid, Lock, LockOpen, Mail, MessageSquare, Save, Table2, Tag, Trash2, User, Download, X } from 'lucide-react'
-import { getCollection, getComments, addComment, deleteComment, getResponses, listCollections, upsertStaffFields } from '../api/collections'
+import { Calendar, ClipboardList, Clipboard, LayoutGrid, Lock, LockOpen, Mail, MessageSquare, Save, Table2, Tag, Trash2, User as UserIcon, Download, X } from 'lucide-react'
+import { approveResponseWorkflow, getCollection, getComments, addComment, deleteComment, getResponses, listCollections, rejectResponseWorkflow, upsertStaffFields } from '../api/collections'
 import {
   getCollectionTicketTemplates,
   getCollectionTickets,
@@ -14,6 +14,8 @@ import {
 import { getTicketTemplateFields } from '../api/ticketTemplates'
 import { getCategoryColorClasses } from '../utils/categoryColors'
 import type {
+  ApprovalWorkflowStageSummary,
+  ApprovalWorkflowSummary,
   Collection,
   CollectionField,
   CollectionResponse,
@@ -1113,6 +1115,18 @@ function TicketFieldEditor({
   )
 }
 
+function getActiveWorkflowStage(workflow?: ApprovalWorkflowSummary | null): ApprovalWorkflowStageSummary | null {
+  if (!workflow || workflow.status !== 'pending') return null
+  return workflow.stages.find(stage => stage.stageOrder === workflow.activeStageOrder && stage.status === 'pending') ?? null
+}
+
+function canUserActOnWorkflow(workflow: ApprovalWorkflowSummary | null | undefined, userId: number | undefined): boolean {
+  if (!workflow || !userId) return false
+  const activeStage = getActiveWorkflowStage(workflow)
+  if (!activeStage) return false
+  return activeStage.approvers.some(approver => approver.userId === userId && approver.status === 'pending')
+}
+
 export default function RecordsPage() {
   const { user } = useAuth()
   const [collections, setCollections] = useState<Collection[]>([])
@@ -1127,6 +1141,8 @@ export default function RecordsPage() {
   const [expandedStaffResponseId, setExpandedStaffResponseId] = useState<number | null>(null)
   const [staffEdits, setStaffEdits] = useState<Record<number, Record<number, string>>>({})
   const [staffSaveState, setStaffSaveState] = useState<Record<number, 'idle' | 'saving' | 'saved' | 'error'>>({})
+  const [workflowCommentDrafts, setWorkflowCommentDrafts] = useState<Record<number, string>>({})
+  const [workflowActionState, setWorkflowActionState] = useState<Record<number, 'idle' | 'saving' | 'error'>>({})
   // Comments + tabs
   const [submissionTab, setSubmissionTab] = useState<Record<number, SubmissionTab>>({})
   const [commentsByResponse, setCommentsByResponse] = useState<Record<number, SubmissionComment[]>>({})
@@ -1450,6 +1466,28 @@ export default function RecordsPage() {
     } catch (err) {
       console.error('[RecordsPage] saveStaffNotes:', err)
       setStaffSaveState(prev => ({ ...prev, [responseId]: 'error' }))
+    }
+  }
+
+  async function handleWorkflowDecision(responseId: number, decision: 'approve' | 'reject') {
+    if (!selectedCollection?.id) return
+    setWorkflowActionState(prev => ({ ...prev, [responseId]: 'saving' }))
+    try {
+      const comment = (workflowCommentDrafts[responseId] ?? '').trim()
+      const summary = decision === 'approve'
+        ? await approveResponseWorkflow(selectedCollection.id, responseId, comment)
+        : await rejectResponseWorkflow(selectedCollection.id, responseId, comment)
+
+      setResponses(prev => prev.map(response => (
+        response.id === responseId
+          ? { ...response, workflow: summary }
+          : response
+      )))
+      setWorkflowCommentDrafts(prev => ({ ...prev, [responseId]: '' }))
+      setWorkflowActionState(prev => ({ ...prev, [responseId]: 'idle' }))
+    } catch (err) {
+      console.error('[RecordsPage] workflowDecision:', err)
+      setWorkflowActionState(prev => ({ ...prev, [responseId]: 'error' }))
     }
   }
 
@@ -1785,7 +1823,7 @@ export default function RecordsPage() {
               <h2 className="text-xl font-bold text-[#1E293B] dark:text-[#F1F5F9] tracking-tight flex items-center gap-1.5">
                 {selectedCollection.title}
                 {!selectedCollection.anonymous && (
-                  <User size={15} className="shrink-0 text-[#2563EB] dark:text-white" aria-label="Authentication required" />
+                  <UserIcon size={15} className="shrink-0 text-[#2563EB] dark:text-white" aria-label="Authentication required" />
                 )}
               </h2>
               <p className="text-sm text-[#64748B]">
@@ -2092,6 +2130,10 @@ export default function RecordsPage() {
           {responses.map(response => {
             const activeTab = submissionTab[response.id] === 'comments' ? 'comments' : 'general'
             const comments = commentsByResponse[response.id] ?? []
+            const workflow = response.workflow ?? null
+            const activeWorkflowStage = getActiveWorkflowStage(workflow)
+            const canActOnWorkflow = canUserActOnWorkflow(workflow, user?.id)
+            const isWorkflowSaving = workflowActionState[response.id] === 'saving'
             return (
             <section
               key={response.id}
@@ -2108,7 +2150,7 @@ export default function RecordsPage() {
                       {formatSubmittedAt(response.submittedAt)}
                     </span>
                     <span className="flex items-center gap-1">
-                      <User size={12} />
+                      <UserIcon size={12} />
                       {response.respondentName || 'Anonymous'}
                     </span>
                     {response.respondentEmail && (
@@ -2120,6 +2162,69 @@ export default function RecordsPage() {
                   </div>
                 </div>
               </div>
+
+              {workflow && (
+                <div className="rounded border border-[#DBEAFE] dark:border-[#1D4ED8] bg-[#F8FBFF] dark:bg-[#0F172A] p-4 space-y-3">
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-[#2563EB]">Approval Workflow</p>
+                      <p className="text-sm text-[#1E293B] dark:text-[#F1F5F9]">
+                        Status: {workflow.status.replace(/_/g, ' ')}
+                        {activeWorkflowStage ? ` · Current stage: ${activeWorkflowStage.stageName}` : ''}
+                      </p>
+                    </div>
+                    {canActOnWorkflow && (
+                      <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                        Your approval is required
+                      </span>
+                    )}
+                  </div>
+
+                  {activeWorkflowStage && (
+                    <div className="text-xs text-[#64748B] dark:text-[#94A3B8]">
+                      Approvers: {activeWorkflowStage.approvers.map(approver => `${approver.userName ?? approver.assignmentValue} (${approver.status})`).join(', ')}
+                    </div>
+                  )}
+
+                  {canActOnWorkflow && (
+                    <div className="space-y-3 border-t border-[#DBEAFE] dark:border-[#1D4ED8] pt-3">
+                      <textarea
+                        rows={2}
+                        value={workflowCommentDrafts[response.id] ?? ''}
+                        onChange={e => {
+                          setWorkflowCommentDrafts(prev => ({ ...prev, [response.id]: e.target.value }))
+                          if (workflowActionState[response.id] === 'error') {
+                            setWorkflowActionState(prev => ({ ...prev, [response.id]: 'idle' }))
+                          }
+                        }}
+                        placeholder="Optional approval comment"
+                        className="w-full resize-none rounded border border-[#CBD5E1] dark:border-[#334155] bg-white dark:bg-[#0F172A] px-3 py-2 text-sm text-[#1E293B] dark:text-[#F1F5F9] placeholder-[#94A3B8] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleWorkflowDecision(response.id, 'approve')}
+                          disabled={isWorkflowSaving}
+                          className="inline-flex items-center rounded bg-[#16A34A] px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-[#15803D] disabled:opacity-50"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleWorkflowDecision(response.id, 'reject')}
+                          disabled={isWorkflowSaving}
+                          className="inline-flex items-center rounded bg-[#DC2626] px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-[#B91C1C] disabled:opacity-50"
+                        >
+                          Reject
+                        </button>
+                        {workflowActionState[response.id] === 'error' && (
+                          <span className="text-xs text-red-600 dark:text-red-400">Failed to update approval. Try again.</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Tab bar */}
               <div className="flex gap-1 border-b border-[#E2E8F0] dark:border-[#334155]">

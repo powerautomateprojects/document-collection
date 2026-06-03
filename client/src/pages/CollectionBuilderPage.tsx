@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -11,9 +11,10 @@ import {
   Save,
   Eye,
   Copy,
-  Upload,
+  Image as ImageIcon,
   Lock,
   MoreHorizontal,
+  X,
 } from 'lucide-react'
 import {
   createCollection,
@@ -24,11 +25,16 @@ import {
   publishCollectionVersion,
   updateCollection,
 } from '../api/collections'
+import { listGalleryAssets } from '../api/galleryAssets'
 import { getCollectionTicketTemplates, saveCollectionTicketTemplates } from '../api/tickets'
 import { listTicketTemplates } from '../api/ticketTemplates'
 import { listCategories } from '../api/categories'
-import type { Category, Collection, CollectionField, CollectionTicketTemplate, TicketTemplate } from '../types'
+import { listUsers, type AppUser } from '../api/users'
+import type { Category, Collection, CollectionField, CollectionTicketTemplate, GalleryAsset, TicketTemplate } from '../types'
 import type {
+  ApprovalWorkflowCondition,
+  ApprovalWorkflowDefinition,
+  ApprovalWorkflowStageDefinition,
   ColType,
   CollectionStatus,
   CollectionVersion,
@@ -174,6 +180,40 @@ const INPUT =
 
 const LABEL = 'block text-xs font-medium text-[#64748B] mb-1'
 const OTHER_OPTION_MARKER = '__DCP_OTHER_OPTION__'
+const APPROVAL_ROLE_OPTIONS = ['administrator', 'team_manager', 'reviewer', 'user'] as const
+
+function blankWorkflowStage(index: number): ApprovalWorkflowStageDefinition {
+  return {
+    id: `stage-${uid()}`,
+    name: `Stage ${index + 1}`,
+    approvalMode: 'all',
+    assignees: [],
+    conditions: null,
+    reminderAfterHours: 24,
+    escalationAfterHours: 72,
+    escalationAssignees: null,
+  }
+}
+
+function normalizeWorkflowDefinitionForBuilder(definition?: ApprovalWorkflowDefinition | null): ApprovalWorkflowDefinition {
+  if (!definition?.enabled || definition.stages.length === 0) {
+    return { enabled: false, stages: [blankWorkflowStage(0)] }
+  }
+
+  return {
+    enabled: true,
+    stages: definition.stages.map((stage, index) => ({
+      id: stage.id || `stage-${uid()}`,
+      name: stage.name || `Stage ${index + 1}`,
+      approvalMode: stage.approvalMode === 'any' ? 'any' : 'all',
+      assignees: stage.assignees ?? [],
+      conditions: stage.conditions && stage.conditions.conditions.length > 0 ? stage.conditions : null,
+      reminderAfterHours: stage.reminderAfterHours ?? 24,
+      escalationAfterHours: stage.escalationAfterHours ?? 72,
+      escalationAssignees: stage.escalationAssignees ?? null,
+    })),
+  }
+}
 
 // ── Component ─────────────────────────────────────────────────
 
@@ -192,6 +232,7 @@ export default function CollectionBuilderPage() {
   const [category, setCategory] = useState('')
   const [dateDue, setDateDue] = useState('')
   const [coverPhotoUrl, setCoverPhotoUrl] = useState('')
+  const [coverPhotoAssetId, setCoverPhotoAssetId] = useState<number | null>(null)
   const [logoUrl, setLogoUrl] = useState('')
   const [anonymous, setAnonymous] = useState(false)
   const [status, setStatus] = useState<CollectionStatus>('draft')
@@ -201,6 +242,9 @@ export default function CollectionBuilderPage() {
   const [instructionsDocUrl, setInstructionsDocUrl] = useState('')
   const [allowSubmissionEdits, setAllowSubmissionEdits] = useState(false)
   const [submissionEditWindowHours, setSubmissionEditWindowHours] = useState('24')
+  const [workflowEnabled, setWorkflowEnabled] = useState(false)
+  const [workflowStages, setWorkflowStages] = useState<ApprovalWorkflowStageDefinition[]>([blankWorkflowStage(0)])
+  const [workflowUsers, setWorkflowUsers] = useState<AppUser[]>([])
 
 
   // Fields
@@ -228,6 +272,9 @@ export default function CollectionBuilderPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [categoriesLoading, setCategoriesLoading] = useState(true)
   const [categoriesError, setCategoriesError] = useState<string | null>(null)
+  const [galleryAssets, setGalleryAssets] = useState<GalleryAsset[]>([])
+  const [galleryLoading, setGalleryLoading] = useState(false)
+  const [galleryError, setGalleryError] = useState<string | null>(null)
 
   // Ticket fields
   const [ticketFields, setTicketFields] = useState<BuilderField[]>([])
@@ -258,6 +305,11 @@ export default function CollectionBuilderPage() {
     [activeBuilderPage, fields],
   )
 
+  const selectedCoverAsset = useMemo(
+    () => galleryAssets.find(asset => asset.id === coverPhotoAssetId) ?? null,
+    [galleryAssets, coverPhotoAssetId],
+  )
+
   function applyCollectionToForm(col: Collection, options?: { asTemplate?: boolean }) {
     const asTemplate = options?.asTemplate === true
 
@@ -269,6 +321,7 @@ export default function CollectionBuilderPage() {
     setCategory(col.category ?? '')
     setDateDue(asTemplate ? '' : col.dateDue ?? '')
     setCoverPhotoUrl(col.coverPhotoUrl ?? '')
+    setCoverPhotoAssetId(col.coverPhotoAssetId ?? null)
     setLogoUrl(col.logoUrl ?? '')
     setAnonymous(col.anonymous)
     setAllowSubmissionEdits(col.allowSubmissionEdits)
@@ -277,6 +330,9 @@ export default function CollectionBuilderPage() {
     setStatus(asTemplate ? 'draft' : (col.status ?? 'draft'))
     setInstructions(col.instructions ?? '')
     setInstructionsDocUrl(col.instructionsDocUrl ?? '')
+    const workflow = normalizeWorkflowDefinitionForBuilder(col.workflowDefinition)
+    setWorkflowEnabled(workflow.enabled)
+    setWorkflowStages(workflow.stages)
     setFields(mapCollectionToBuilderFields(col))
     setActiveBuilderPage(1)
     setSaveError(null)
@@ -303,6 +359,16 @@ export default function CollectionBuilderPage() {
       })
       .catch(err => setLoadError((err as Error).message))
   }, [id, isEdit])
+
+  useEffect(() => {
+    if (detailsTab !== 'photo') return
+    setGalleryLoading(true)
+    setGalleryError(null)
+    listGalleryAssets()
+      .then(setGalleryAssets)
+      .catch(err => setGalleryError((err as Error).message))
+      .finally(() => setGalleryLoading(false))
+  }, [detailsTab])
 
   // Load assigned ticket templates when editing
   useEffect(() => {
@@ -342,6 +408,12 @@ export default function CollectionBuilderPage() {
       .then(setCategories)
       .catch(err => setCategoriesError((err as Error).message))
       .finally(() => setCategoriesLoading(false))
+  }, [])
+
+  useEffect(() => {
+    listUsers()
+      .then(setWorkflowUsers)
+      .catch(() => setWorkflowUsers([]))
   }, [])
 
   useEffect(() => {
@@ -581,18 +653,6 @@ export default function CollectionBuilderPage() {
     }
   }
 
-  function handleCoverUpload(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = reader.result as string
-      setCoverPhotoUrl(result)
-    }
-    reader.readAsDataURL(file)
-  }
-
   // ── Autosave (edit mode only) ────────────────────────────
 
   useEffect(() => {
@@ -606,7 +666,7 @@ export default function CollectionBuilderPage() {
       if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, description, category, dateDue, coverPhotoUrl, logoUrl, anonymous, allowSubmissionEdits, submissionEditWindowHours, status, instructions, instructionsDocUrl, fields])
+  }, [title, description, category, dateDue, coverPhotoUrl, coverPhotoAssetId, logoUrl, anonymous, allowSubmissionEdits, submissionEditWindowHours, status, instructions, instructionsDocUrl, workflowEnabled, workflowStages, fields])
 
   // Mark as loaded AFTER the autosave effect has already run (effects run in definition order)
   useEffect(() => {
@@ -621,6 +681,26 @@ export default function CollectionBuilderPage() {
       ? Math.max(1, Math.min(168, Math.floor(rawHours)))
       : 24
 
+    const normalizedWorkflow = workflowEnabled
+      ? {
+          enabled: true,
+          stages: workflowStages
+            .map(stage => ({
+              ...stage,
+              name: stage.name.trim(),
+              assignees: (stage.assignees ?? []).filter(assignee => assignee.value.trim() !== ''),
+              conditions:
+                stage.conditions && stage.conditions.conditions.length > 0
+                  ? {
+                      match: stage.conditions.match,
+                      conditions: stage.conditions.conditions.filter(condition => condition.fieldKey.trim() !== ''),
+                    }
+                  : null,
+            }))
+            .filter(stage => stage.name !== '' && stage.assignees.length > 0),
+        }
+      : null
+
     return {
       title: title.trim(),
       status: statusOverride,
@@ -628,9 +708,14 @@ export default function CollectionBuilderPage() {
       category: category.trim() || undefined,
       dateDue: dateDue || undefined,
       coverPhotoUrl: coverPhotoUrl.trim() || undefined,
+      coverPhotoAssetId,
       logoUrl: logoUrl.trim() || undefined,
       instructions: instructions || undefined,
       instructionsDocUrl: instructionsDocUrl.trim() || undefined,
+      workflowDefinition: normalizedWorkflow && normalizedWorkflow.stages.length > 0 ? normalizedWorkflow : null,
+      sourceTemplateCollectionId: !isEdit && templateId && Number.isInteger(Number(templateId)) && Number(templateId) > 0
+        ? Number(templateId)
+        : undefined,
       anonymous,
       allowSubmissionEdits,
       submissionEditWindowHours: allowSubmissionEdits ? normalizedHours : undefined,
@@ -764,6 +849,69 @@ export default function CollectionBuilderPage() {
     } finally {
       setSaving(false)
     }
+  }
+
+  function updateWorkflowStage(stageId: string, patch: Partial<ApprovalWorkflowStageDefinition>) {
+    setWorkflowStages(prev => prev.map(stage => (stage.id === stageId ? { ...stage, ...patch } : stage)))
+  }
+
+  function addWorkflowStage() {
+    setWorkflowStages(prev => [...prev, blankWorkflowStage(prev.length)])
+  }
+
+  function removeWorkflowStage(stageId: string) {
+    setWorkflowStages(prev => {
+      const next = prev.filter(stage => stage.id !== stageId)
+      return next.length > 0 ? next : [blankWorkflowStage(0)]
+    })
+  }
+
+  function addWorkflowAssignee(stageId: string, type: 'user' | 'role') {
+    setWorkflowStages(prev => prev.map(stage => {
+      if (stage.id !== stageId) return stage
+      return {
+        ...stage,
+        assignees: [...stage.assignees, { type, value: '' }],
+      }
+    }))
+  }
+
+  function updateWorkflowAssignee(stageId: string, assigneeIndex: number, patch: { type?: 'user' | 'role'; value?: string }) {
+    setWorkflowStages(prev => prev.map(stage => {
+      if (stage.id !== stageId) return stage
+      return {
+        ...stage,
+        assignees: stage.assignees.map((assignee, index) => (index === assigneeIndex ? { ...assignee, ...patch } : assignee)),
+      }
+    }))
+  }
+
+  function removeWorkflowAssignee(stageId: string, assigneeIndex: number) {
+    setWorkflowStages(prev => prev.map(stage => {
+      if (stage.id !== stageId) return stage
+      return {
+        ...stage,
+        assignees: stage.assignees.filter((_, index) => index !== assigneeIndex),
+      }
+    }))
+  }
+
+  function updateWorkflowCondition(stageId: string, patch: Partial<ApprovalWorkflowCondition>) {
+    setWorkflowStages(prev => prev.map(stage => {
+      if (stage.id !== stageId) return stage
+      const current = stage.conditions?.conditions[0] ?? { fieldKey: '', operator: 'equals', value: '' }
+      return {
+        ...stage,
+        conditions: {
+          match: 'all',
+          conditions: [{ ...current, ...patch }],
+        },
+      }
+    }))
+  }
+
+  function clearWorkflowCondition(stageId: string) {
+    setWorkflowStages(prev => prev.map(stage => (stage.id === stageId ? { ...stage, conditions: null } : stage)))
   }
 
   const categoryOptions = useMemo(() => {
@@ -1272,6 +1420,199 @@ export default function CollectionBuilderPage() {
                   {anonymous ? 'No name or email required from respondents.' : 'Respondents must provide their name and email.'}
                 </p>
               </div>
+              <div className="sm:col-span-2 rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A] p-4 space-y-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Approval Workflow</h3>
+                    <p className="mt-1 text-xs text-[#64748B]">
+                      Define sequential stages, assign approvers by user or role, and add optional routing rules with reminder/escalation windows.
+                    </p>
+                  </div>
+                  <label className="inline-flex items-center gap-2 text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9]">
+                    <input
+                      type="checkbox"
+                      checked={workflowEnabled}
+                      onChange={e => setWorkflowEnabled(e.target.checked)}
+                      className="accent-[#2563EB] w-4 h-4"
+                    />
+                    Enable
+                  </label>
+                </div>
+
+                {workflowEnabled && (
+                  <div className="space-y-4">
+                    {workflowStages.map((stage, stageIndex) => {
+                      const condition = stage.conditions?.conditions[0] ?? null
+                      return (
+                        <div key={stage.id} className="rounded-lg border border-[#CBD5E1] dark:border-[#334155] bg-white dark:bg-[#111827] p-4 space-y-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="inline-flex items-center justify-center h-7 min-w-7 px-2 rounded-full bg-[#DBEAFE] text-[#1D4ED8] text-xs font-semibold">
+                                {stageIndex + 1}
+                              </span>
+                              <input
+                                type="text"
+                                value={stage.name}
+                                onChange={e => updateWorkflowStage(stage.id, { name: e.target.value })}
+                                className={INPUT}
+                                placeholder="Stage name"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeWorkflowStage(stage.id)}
+                              className="text-xs font-medium text-red-600 hover:text-red-700"
+                            >
+                              Remove stage
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                              <label className={LABEL}>Approval Mode</label>
+                              <select
+                                value={stage.approvalMode}
+                                onChange={e => updateWorkflowStage(stage.id, { approvalMode: e.target.value === 'any' ? 'any' : 'all' })}
+                                className={INPUT}
+                              >
+                                <option value="all">All approvers required</option>
+                                <option value="any">Any approver can approve</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className={LABEL}>Reminder After (hours)</label>
+                              <input
+                                type="number"
+                                min={1}
+                                value={stage.reminderAfterHours ?? ''}
+                                onChange={e => updateWorkflowStage(stage.id, { reminderAfterHours: e.target.value ? Number(e.target.value) : null })}
+                                className={INPUT}
+                              />
+                            </div>
+                            <div>
+                              <label className={LABEL}>Escalate After (hours)</label>
+                              <input
+                                type="number"
+                                min={1}
+                                value={stage.escalationAfterHours ?? ''}
+                                onChange={e => updateWorkflowStage(stage.id, { escalationAfterHours: e.target.value ? Number(e.target.value) : null })}
+                                className={INPUT}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <label className={LABEL}>Approvers</label>
+                              <div className="flex items-center gap-2">
+                                <button type="button" onClick={() => addWorkflowAssignee(stage.id, 'user')} className="text-xs font-medium text-[#2563EB] hover:text-blue-700">Add user</button>
+                                <button type="button" onClick={() => addWorkflowAssignee(stage.id, 'role')} className="text-xs font-medium text-[#2563EB] hover:text-blue-700">Add role</button>
+                              </div>
+                            </div>
+                            {stage.assignees.length === 0 && (
+                              <p className="text-xs text-[#64748B]">Add at least one approver for this stage.</p>
+                            )}
+                            {stage.assignees.map((assignee, assigneeIndex) => (
+                              <div key={`${stage.id}-assignee-${assigneeIndex}`} className="grid grid-cols-1 md:grid-cols-[140px_minmax(0,1fr)_auto] gap-3 items-center">
+                                <select
+                                  value={assignee.type}
+                                  onChange={e => updateWorkflowAssignee(stage.id, assigneeIndex, { type: e.target.value === 'role' ? 'role' : 'user', value: '' })}
+                                  className={INPUT}
+                                >
+                                  <option value="user">Specific user</option>
+                                  <option value="role">Role</option>
+                                </select>
+                                {assignee.type === 'user' ? (
+                                  <select
+                                    value={assignee.value}
+                                    onChange={e => updateWorkflowAssignee(stage.id, assigneeIndex, { value: e.target.value })}
+                                    className={INPUT}
+                                  >
+                                    <option value="">Select user</option>
+                                    {workflowUsers.map(user => (
+                                      <option key={user.id} value={String(user.id)}>
+                                        {user.name} ({user.email})
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <select
+                                    value={assignee.value}
+                                    onChange={e => updateWorkflowAssignee(stage.id, assigneeIndex, { value: e.target.value })}
+                                    className={INPUT}
+                                  >
+                                    <option value="">Select role</option>
+                                    {APPROVAL_ROLE_OPTIONS.map(role => (
+                                      <option key={role} value={role}>{role}</option>
+                                    ))}
+                                  </select>
+                                )}
+                                <button type="button" onClick={() => removeWorkflowAssignee(stage.id, assigneeIndex)} className="text-xs font-medium text-red-600 hover:text-red-700">Remove</button>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="rounded border border-dashed border-[#CBD5E1] dark:border-[#334155] p-3 space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <p className="text-xs font-semibold uppercase tracking-wide text-[#64748B]">Optional Condition</p>
+                                <p className="text-xs text-[#64748B]">Only run this stage when the submitted form data matches the rule.</p>
+                              </div>
+                              {condition ? (
+                                <button type="button" onClick={() => clearWorkflowCondition(stage.id)} className="text-xs font-medium text-red-600 hover:text-red-700">Clear</button>
+                              ) : null}
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                              <select
+                                value={condition?.fieldKey ?? ''}
+                                onChange={e => updateWorkflowCondition(stage.id, { fieldKey: e.target.value })}
+                                className={INPUT}
+                              >
+                                <option value="">Select field</option>
+                                {fields.filter(field => field.label.trim() !== '').map(field => (
+                                  <option key={field.fieldKey} value={field.fieldKey}>{field.label}</option>
+                                ))}
+                              </select>
+                              <select
+                                value={condition?.operator ?? 'equals'}
+                                onChange={e => updateWorkflowCondition(stage.id, { operator: e.target.value as ApprovalWorkflowCondition['operator'] })}
+                                className={INPUT}
+                              >
+                                <option value="equals">equals</option>
+                                <option value="not_equals">does not equal</option>
+                                <option value="greater_than">greater than</option>
+                                <option value="greater_or_equal">greater than or equal</option>
+                                <option value="less_than">less than</option>
+                                <option value="less_or_equal">less than or equal</option>
+                                <option value="contains">contains</option>
+                                <option value="not_empty">is not empty</option>
+                                <option value="is_empty">is empty</option>
+                              </select>
+                              <input
+                                type="text"
+                                value={condition?.value === null || condition?.value === undefined ? '' : String(condition.value)}
+                                onChange={e => updateWorkflowCondition(stage.id, { value: e.target.value })}
+                                className={INPUT}
+                                placeholder="Comparison value"
+                                disabled={condition?.operator === 'not_empty' || condition?.operator === 'is_empty'}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+
+                    <button
+                      type="button"
+                      onClick={addWorkflowStage}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded border border-[#CBD5E1] dark:border-[#334155] text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9] hover:bg-white dark:hover:bg-[#111827]"
+                    >
+                      <Plus size={14} />
+                      Add stage
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -1292,37 +1633,72 @@ export default function CollectionBuilderPage() {
                 <p className="mt-1 text-xs text-[#94A3B8]">Displayed at the top of the survey banner (max 150px wide). Supports SVG, PNG, etc.</p>
               </div>
               <div>
-                <label htmlFor={`${formId}-cover`} className={LABEL}>
-                  Cover Photo URL (optional)
-                </label>
-                <input
-                  id={`${formId}-cover`}
-                  type="url"
-                  placeholder="https://…"
-                  value={coverPhotoUrl}
-                  onChange={e => setCoverPhotoUrl(e.target.value)}
-                  className={INPUT}
-                />
-              </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <label className={LABEL}>Cover Photo Gallery</label>
+                    <p className="text-xs text-[#94A3B8]">Choose a cover photo from your organization gallery. Upload new images in Settings first.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCoverPhotoAssetId(null)
+                      setCoverPhotoUrl('')
+                    }}
+                    className="inline-flex items-center gap-1.5 border border-[#CBD5E1] dark:border-[#334155] text-[#475569] dark:text-[#CBD5E1] text-sm font-medium px-3 py-2 rounded hover:bg-[#F1F5F9] dark:hover:bg-[#1E293B] transition-colors"
+                  >
+                    <X size={14} />
+                    Clear Cover
+                  </button>
+                </div>
+                {galleryError && <p className="text-sm text-red-500 mt-2">{galleryError}</p>}
+                {galleryLoading ? (
+                  <p className="text-sm text-[#64748B] mt-3">Loading gallery…</p>
+                ) : galleryAssets.length === 0 ? (
+                  <div className="mt-3 rounded-lg border border-dashed border-[#CBD5E1] dark:border-[#334155] p-4 text-sm text-[#64748B]">
+                    No gallery images are available yet. Upload cover images in Settings before assigning one here.
+                  </div>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    <select
+                      value={coverPhotoAssetId == null ? '' : String(coverPhotoAssetId)}
+                      onChange={e => {
+                        const value = e.target.value
+                        if (!value) {
+                          setCoverPhotoAssetId(null)
+                          setCoverPhotoUrl('')
+                          return
+                        }
 
-              <div>
-                <label htmlFor={`${formId}-cover-upload`} className={LABEL}>
-                  Upload Attachment (Image)
-                </label>
-                <label
-                  htmlFor={`${formId}-cover-upload`}
-                  className="inline-flex items-center gap-2 px-3 py-2 border border-[#CBD5E1] dark:border-[#334155] rounded text-sm text-[#475569] dark:text-[#94A3B8] cursor-pointer hover:bg-[#F8FAFC] dark:hover:bg-[#0F172A]"
-                >
-                  <Upload size={14} />
-                  Upload Image
-                </label>
-                <input
-                  id={`${formId}-cover-upload`}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleCoverUpload}
-                  className="hidden"
-                />
+                        const selectedId = Number.parseInt(value, 10)
+                        const asset = galleryAssets.find(item => item.id === selectedId)
+                        setCoverPhotoAssetId(selectedId)
+                        setCoverPhotoUrl(asset?.fileUrl ?? '')
+                      }}
+                      className={INPUT}
+                    >
+                      <option value="">Select a gallery image…</option>
+                      {galleryAssets.map(asset => (
+                        <option key={asset.id} value={asset.id}>
+                          {asset.name} ({asset.usageCount} in use)
+                        </option>
+                      ))}
+                    </select>
+
+                    {selectedCoverAsset && (
+                      <div className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A] p-3">
+                        <div className="flex items-center justify-between gap-3 text-sm">
+                          <div>
+                            <p className="font-medium text-[#1E293B] dark:text-[#F1F5F9]">{selectedCoverAsset.name}</p>
+                            <p className="mt-1 text-xs text-[#64748B]">Used by {selectedCoverAsset.usageCount} collection{selectedCoverAsset.usageCount === 1 ? '' : 's'}</p>
+                          </div>
+                          {selectedCoverAsset.tags.length > 0 && (
+                            <span className="text-xs text-[#94A3B8]">{selectedCoverAsset.tags.join(', ')}</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {coverPhotoUrl ? (
@@ -1342,7 +1718,10 @@ export default function CollectionBuilderPage() {
                   </div>
                 </div>
               ) : (
-                <p className="text-xs text-[#94A3B8]">No cover photo selected yet.</p>
+                <div className="flex items-center gap-2 text-xs text-[#94A3B8]">
+                  <ImageIcon size={14} />
+                  No cover photo selected yet.
+                </div>
               )}
             </div>
           )}

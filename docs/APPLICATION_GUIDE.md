@@ -18,7 +18,8 @@ A full-stack document and survey collection platform built with React + TypeScri
 10. [Notifications](#10-notifications)
 11. [Settings](#11-settings)
 12. [Locations](#12-locations)
-13. [Infrastructure & Database](#13-infrastructure--database)
+13. [Approval Workflows](#13-approval-workflows)
+14. [Infrastructure & Database](#14-infrastructure--database)
 
 ---
 
@@ -87,6 +88,7 @@ A full-stack document and survey collection platform built with React + TypeScri
 - Real-time **autosave** — changes are saved automatically while editing. Autosave is debounced and does not fire on the initial page load (React 18 concurrent mode safe).
 - **Draft / Publish workflow**: Collections start as drafts; administrators explicitly publish them to make them available for respondents.
 - **LocalStorage draft saving**: Unsaved changes to a draft are preserved in `localStorage` so work is not lost on page refresh.
+- **Gallery-first cover photos**: Cover photos are now chosen from an organization-specific gallery instead of being uploaded directly inside the builder.
 
 ### Multi-Page Forms
 - Collections can be split across **multiple pages**; respondents navigate forward/back through pages.
@@ -97,6 +99,15 @@ A full-stack document and survey collection platform built with React + TypeScri
 
 ### Collection Branching
 - **Single-choice branching**: A single-choice field can route respondents to different pages depending on their answer.
+
+### Approval Workflows
+- Collections can now include a built-in **approval workflow definition**.
+- Administrators can configure **sequential approval stages** directly in the Collection Builder.
+- Each stage can use **all approvers required** or **any approver can approve** behavior.
+- Approvers can be assigned by **specific user** or by **role**.
+- Each stage supports **optional conditions** so the stage only runs when submitted field values match the configured rule.
+- Each stage supports **reminder** and **escalation** timers measured in hours.
+- Workflow definitions live on the **Collection**; each submission creates its own **workflow instance** at submit time.
 
 ### Template Library
 - A **collection template library** provides pre-built collection structures that administrators can load as a starting point.
@@ -170,6 +181,7 @@ A full-stack document and survey collection platform built with React + TypeScri
 - Paginated list of individual submissions displayed as **cards**.
 - **Table / Spreadsheet view**: Toggle between card view and a spreadsheet-style table.
 - **Submission edit flow**: Administrators can edit any submission's field values directly in the Records page.
+- Each response now carries its **approval workflow summary**, including the active stage and overall approval status.
 
 ### Staff Notes
 - Staff-only fields appear in each submission card for administrators to fill in.
@@ -225,6 +237,7 @@ Each submission card in Individual view has two tabs: **General** and **Comments
 - **In-app notification system**: Real-time notifications for key events (new submissions, invitations, etc.).
 - A **notification badge** on the nav icon shows unread count.
 - **Relative timestamps** (e.g., "2 minutes ago") on notification items.
+- Approval workflows also use the notification system for **stage assignment**, **SLA reminders**, and **escalation alerts**.
 
 ---
 
@@ -237,6 +250,8 @@ Each submission card in Individual view has two tabs: **General** and **Comments
 - Upload a **custom logo** displayed on the survey banner and fill page.
 - Configurable **logo padding** (pixel-level control).
 - Configurable **QR code** appearance per collection.
+- A **Cover Photo Gallery** panel lets administrators upload organization-specific gallery images for later use in the Collection Builder.
+- Gallery images can only be **deleted when unused**; in-use images show a usage count and remain protected until they are removed from all collections.
 
 ### Login Page
 - Set a custom **subtitle badge** and **login message** that appear on the public login screen.
@@ -255,6 +270,68 @@ Each submission card in Individual view has two tabs: **General** and **Comments
 - A **Location field type** lets collection designers link a field to a list of named locations.
 - Locations are **org-scoped**: each organization manages its own location list.
 - The locations API supports **optional authentication** — public fill pages can load locations without a login token, while scoped routes enforce org membership.
+
+---
+
+## 13. Approval Workflows
+
+### Collection-Level Workflow Design
+- Approval workflows are configured on the **Collection**, not on individual submissions.
+- A collection workflow acts as the reusable **template definition** for how requests should be approved.
+- When a respondent submits a form, the system creates a **workflow instance** for that specific response.
+
+### Sequential and Parallel Approval Patterns
+- A collection can define multiple approval stages in sequence.
+- Each stage supports one of two approval modes:
+	- **All approvers required**: every assigned approver must approve before the workflow moves forward.
+	- **Any approver can approve**: one approval is enough to advance the workflow.
+- Stages can be routed to:
+	- specific named users
+	- organization-scoped roles such as `administrator`, `team_manager`, `reviewer`, or `user`
+
+### Conditional Workflow Routing
+- Each stage can include an optional **field-based condition**.
+- Conditions evaluate submitted response values using operators such as:
+	- equals / does not equal
+	- greater than / less than
+	- contains
+	- is empty / is not empty
+- This allows patterns such as:
+	- route Finance approval only when `amount > 500`
+	- add a manager stage only when `department = Operations`
+	- skip a stage entirely when a controlling field is blank
+
+### SLAs, Reminders, and Escalations
+- Each workflow stage supports a **reminder window** and an **escalation window**.
+- If a stage remains pending beyond the reminder threshold, the system sends a **reminder notification**.
+- If a stage remains pending beyond the escalation threshold, the system marks the stage as **escalated** and sends a higher-priority escalation notification.
+- SLA checks run as part of the server's recurring background notification sweep.
+
+### Approval Lifecycle
+- Workflow instances track:
+	- overall workflow status
+	- active stage name and order
+	- stage-by-stage approval state
+	- per-approver decision status
+	- reminders and escalation timestamps
+- Approvers can approve or reject the active stage.
+- Rejection ends the workflow in a **rejected** state.
+- Approval advances to the next applicable stage until the workflow is **approved**.
+
+### Admin Experience
+- The **Collection Builder** includes an Approval Workflow section in the General tab.
+- Administrators can:
+	- enable or disable approval workflows per collection
+	- add and remove stages
+	- choose approval mode per stage
+	- assign users or roles as approvers
+	- add one conditional routing rule per stage
+	- configure reminder and escalation hours
+
+### Runtime Behavior
+- Workflow instances are created automatically when a response is submitted.
+- Workflow notifications link staff back into the application so they can review the request in context.
+- Response data now includes workflow summary data for downstream records and reporting views.
 
 ---
 
