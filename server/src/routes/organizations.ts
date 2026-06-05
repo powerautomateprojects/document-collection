@@ -40,11 +40,30 @@ function requireAdministrator(req: Request, res: Response): boolean {
 }
 
 router.get('/', authenticateToken, (req: Request, res: Response) => {
-  if (!requireAdministrator(req, res)) {
+  const role = req.user?.role
+  if (role !== 'super_admin' && role !== 'administrator') {
+    res.status(403).json({ error: 'Administrator access required' })
     return
   }
 
   const db = getDb()
+
+  if (role === 'administrator') {
+    // Return only the orgs the administrator belongs to
+    const rows = db
+      .prepare(
+        `SELECT o.*,
+                (SELECT COUNT(*) FROM users u WHERE u.organization_id = o.id) AS user_count,
+                (SELECT COUNT(*) FROM collections c WHERE c.organization_id = o.id) AS collection_count
+         FROM organizations o
+         JOIN user_organizations uo ON uo.organization_id = o.id AND uo.user_id = ?
+         ORDER BY lower(o.name) ASC`
+      )
+      .all(req.user!.sub) as unknown as DbOrganization[]
+    res.json(rows.map(toApiOrganization))
+    return
+  }
+
   const rows = db
     .prepare(
       `SELECT o.*, 

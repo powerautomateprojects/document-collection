@@ -368,6 +368,22 @@ export default function SettingsPage() {
   const [newUserEmail, setNewUserEmail] = useState('')
   const [newUserRole, setNewUserRole] = useState<'user' | 'super_admin'>('user')
   const [newUserMemberships, setNewUserMemberships] = useState<EditableMembership[]>([createEditableMembership()])
+
+  // Pre-populate new user membership with the admin's own org once user + organizations list are ready
+  useEffect(() => {
+    if (!user || user.role === 'super_admin') return
+    if (organizations.length === 0) return
+    // Try user.organizations first, fall back to activeOrganizationId/organizationId, then first org in list
+    const fromProfile = user.organizations?.find(m => m.isDefault)?.organizationId
+      ?? user.organizations?.[0]?.organizationId
+      ?? user.activeOrganizationId
+      ?? user.organizationId
+    const orgId = fromProfile
+      ? String(fromProfile)
+      : String(organizations[0].id)
+    setNewUserMemberships([{ organizationId: orgId, role: 'user', isDefault: true }])
+  }, [user, organizations])
+
   const [userCreateSaving, setUserCreateSaving] = useState(false)
   const [userCreateError, setUserCreateError] = useState<string | null>(null)
   const [userCreateSuccess, setUserCreateSuccess] = useState<number | null>(null)
@@ -612,7 +628,9 @@ export default function SettingsPage() {
       setNewUserName('')
       setNewUserEmail('')
       setNewUserRole('user')
-      setNewUserMemberships([createEditableMembership()])
+      const defaultMembership = user?.organizations?.find(m => m.isDefault) ?? user?.organizations?.[0]
+      const orgId = defaultMembership?.organizationId ?? user?.activeOrganizationId ?? user?.organizationId
+      setNewUserMemberships(orgId ? [{ organizationId: String(orgId), role: 'user', isDefault: true }] : [createEditableMembership()])
     } catch (err) {
       setUserCreateError((err as Error).message)
     } finally {
