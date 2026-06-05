@@ -27,14 +27,17 @@ const INPUT_CLASS =
   'px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-0 ' +
   'rounded-[2px]'
 
-function describeUserOrganizations(user: User) {
-  if (user.organizations.length === 0) {
-    return user.organizationDescription?.trim() || user.organizationName || 'No organization'
-  }
+interface LoginOrg {
+  id: number
+  name: string
+  description: string | null
+}
 
-  return user.organizations
-    .map(org => org.organizationDescription?.trim() || org.organizationName)
-    .join(', ')
+function formatOrgLabel(org: LoginOrg): string {
+  if (org.description?.trim()) {
+    return `${org.description.trim()} (${org.name})`
+  }
+  return org.name
 }
 
 export default function LoginPage() {
@@ -45,8 +48,12 @@ export default function LoginPage() {
     ? (location.state as { redirectTo: string }).redirectTo
     : '/'
 
+  const [organizations, setOrganizations] = useState<LoginOrg[]>([])
+  const [loadingOrgs, setLoadingOrgs] = useState(true)
+  const [selectedOrgId, setSelectedOrgId] = useState<string>('')
+
   const [existingUsers, setExistingUsers] = useState<User[]>([])
-  const [loadingUsers, setLoadingUsers] = useState(true)
+  const [loadingUsers, setLoadingUsers] = useState(false)
   const [userLoadError, setUserLoadError] = useState<string | null>(null)
 
   const sortedUsers = useMemo(
@@ -69,25 +76,21 @@ export default function LoginPage() {
       .catch(() => { /* keep default counts */ })
   }, [])
 
-  const loadUsers = async () => {
+  const loadUsers = async (orgId: string) => {
     setLoadingUsers(true)
     setUserLoadError(null)
+    setExistingUsers([])
+    setSelectedUserId('')
 
     try {
-      const res = await fetch('/api/auth/users')
+      const res = await fetch(`/api/auth/users?organizationId=${orgId}`)
       const data = await res.json() as User[] | { error?: string }
       if (!res.ok || !Array.isArray(data)) {
         throw new Error('Unable to load users')
       }
 
       setExistingUsers(data)
-      setSelectedUserId(currentUserId => {
-        if (data.some(user => String(user.id) === currentUserId)) {
-          return currentUserId
-        }
-
-        return data.length > 0 ? String(data[0].id) : ''
-      })
+      setSelectedUserId(data.length > 0 ? String(data[0].id) : '')
     } catch (err) {
       console.error('[LoginPage] Failed to load users:', err)
       setExistingUsers([])
@@ -106,7 +109,20 @@ export default function LoginPage() {
       .then(setLoginSubtitle)
       .catch(() => { /* keep default */ })
 
-    void loadUsers()
+    // Load organizations for the picker
+    setLoadingOrgs(true)
+    fetch('/api/auth/organizations')
+      .then(r => r.json() as Promise<LoginOrg[]>)
+      .then(orgs => {
+        setOrganizations(orgs)
+        if (orgs.length > 0) {
+          const firstOrgId = String(orgs[0].id)
+          setSelectedOrgId(firstOrgId)
+          void loadUsers(firstOrgId)
+        }
+      })
+      .catch(() => { /* keep empty */ })
+      .finally(() => setLoadingOrgs(false))
   }, [])
 
   const [error, setError] = useState<string | null>(null)
@@ -225,8 +241,30 @@ export default function LoginPage() {
             Select Existing User
           </h2>
           <p className="text-sm text-[#64748B] dark:text-[#94A3B8] mb-5">
-            {loadingUsers ? 'Loading available profiles…' : 'Pick a profile to continue.'}
+            {loadingOrgs ? 'Loading organizations…' : 'Select your organization, then pick a profile.'}
           </p>
+
+          {/* Organization dropdown */}
+          <label className="block text-[10px] font-semibold tracking-[0.18em] text-[#64748B] dark:text-[#475569] uppercase mb-1.5">
+            Organization
+          </label>
+          <select
+            value={selectedOrgId}
+            onChange={e => {
+              const orgId = e.target.value
+              setSelectedOrgId(orgId)
+              if (orgId) void loadUsers(orgId)
+            }}
+            disabled={loadingOrgs || organizations.length === 0}
+            className={INPUT_CLASS + ' mb-4 appearance-none cursor-pointer'}
+            style={{ backgroundImage: 'none' }}
+          >
+            {loadingOrgs && <option value="">Loading organizations…</option>}
+            {!loadingOrgs && organizations.length === 0 && <option value="">No organizations available</option>}
+            {organizations.map(org => (
+              <option key={org.id} value={String(org.id)}>{formatOrgLabel(org)}</option>
+            ))}
+          </select>
 
           {/* User dropdown */}
           <label className="block text-[10px] font-semibold tracking-[0.18em] text-[#64748B] dark:text-[#475569] uppercase mb-1.5">
@@ -235,15 +273,16 @@ export default function LoginPage() {
           <select
             value={selectedUserId}
             onChange={e => setSelectedUserId(e.target.value)}
-            disabled={loadingUsers || sortedUsers.length === 0}
+            disabled={loadingUsers || !selectedOrgId || sortedUsers.length === 0}
             className={INPUT_CLASS + ' mb-3 appearance-none cursor-pointer'}
             style={{ backgroundImage: 'none' }}
           >
-            {loadingUsers && <option value="">Loading users…</option>}
-            {!loadingUsers && sortedUsers.length === 0 && <option value="">No users available</option>}
+            {!selectedOrgId && <option value="">Select an organization first</option>}
+            {selectedOrgId && loadingUsers && <option value="">Loading users…</option>}
+            {selectedOrgId && !loadingUsers && sortedUsers.length === 0 && <option value="">No users available</option>}
             {sortedUsers.map(u => (
               <option key={u.id} value={String(u.id)}>
-                {u.name} · {ROLE_LABELS[u.role]} ({describeUserOrganizations(u)})
+                {u.name} · {ROLE_LABELS[u.role]}
               </option>
             ))}
           </select>
@@ -253,7 +292,7 @@ export default function LoginPage() {
               {userLoadError}
               <button
                 type="button"
-                onClick={loadUsers}
+                onClick={() => selectedOrgId && void loadUsers(selectedOrgId)}
                 disabled={loadingUsers}
                 className="ml-2 underline"
               >
@@ -262,15 +301,9 @@ export default function LoginPage() {
             </div>
           )}
 
-          {!loadingUsers && sortedUsers.length > 0 && (
-            <p className="text-xs text-[#64748B] dark:text-[#94A3B8] mb-4">
-              Users can switch organizations after sign-in if they belong to more than one.
-            </p>
-          )}
-
           <button
             onClick={handleSelectSignIn}
-            disabled={loadingUsers || signingIn || existingUsers.length === 0}
+            disabled={loadingUsers || signingIn || !selectedUserId}
             className="w-full bg-[#1E293B] dark:bg-[#F1F5F9] text-white dark:text-[#0F172A] font-semibold py-2.5 text-sm tracking-wide rounded-[2px] hover:bg-[#0F172A] dark:hover:bg-white transition-colors disabled:opacity-50 mb-8"
           >
             {signingIn ? 'Signing in…' : 'Sign In as Selected User'}

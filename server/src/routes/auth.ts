@@ -45,11 +45,45 @@ function hashToken(raw: string): string {
   return crypto.createHash('sha256').update(raw).digest('hex')
 }
 
-router.get('/users', (_req: Request, res: Response) => {
+router.get('/organizations', (_req: Request, res: Response) => {
   const db = getDb()
-  const userIds = db
-    .prepare('SELECT id FROM users ORDER BY name COLLATE NOCASE ASC, id ASC')
-    .all() as Array<{ id: number }>
+  // Only return orgs that have at least one user (for the login picker)
+  const orgs = db
+    .prepare(
+      `SELECT DISTINCT o.id, o.name, o.description
+       FROM organizations o
+       INNER JOIN user_organizations uo ON uo.organization_id = o.id
+       ORDER BY o.name COLLATE NOCASE ASC`
+    )
+    .all() as Array<{ id: number; name: string; description: string | null }>
+
+  res.json(orgs)
+})
+
+router.get('/users', (req: Request, res: Response) => {
+  const db = getDb()
+  const { organizationId } = req.query as { organizationId?: string }
+
+  let userIds: Array<{ id: number }>
+
+  if (organizationId !== undefined) {
+    const orgId = parseInt(organizationId, 10)
+    if (!Number.isInteger(orgId) || orgId < 1) {
+      res.status(400).json({ error: 'organizationId must be a positive integer' })
+      return
+    }
+    userIds = db
+      .prepare(
+        `SELECT u.id FROM users u
+         INNER JOIN user_organizations uo ON uo.user_id = u.id AND uo.organization_id = ?
+         ORDER BY u.name COLLATE NOCASE ASC, u.id ASC`
+      )
+      .all(orgId) as Array<{ id: number }>
+  } else {
+    userIds = db
+      .prepare('SELECT id FROM users ORDER BY name COLLATE NOCASE ASC, id ASC')
+      .all() as Array<{ id: number }>
+  }
 
   const users = userIds
     .map(row => loadUserAccessProfile(row.id, null, db))
