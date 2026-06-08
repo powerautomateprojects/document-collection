@@ -294,6 +294,7 @@ export interface CollectionTicketTemplate {
   title: string
   description: string | null
   displayOrder: number
+  isArchived?: boolean
 }
 
 export interface TicketResponse {

@@ -15,6 +15,8 @@ import {
   Lock,
   MoreHorizontal,
   X,
+  Archive,
+  ArchiveRestore,
 } from 'lucide-react'
 import {
   createCollection,
@@ -26,7 +28,7 @@ import {
   updateCollection,
 } from '../api/collections'
 import { listGalleryAssets } from '../api/galleryAssets'
-import { getCollectionTicketTemplates, saveCollectionTicketTemplates } from '../api/tickets'
+import { getCollectionTicketTemplatesAll, saveCollectionTicketTemplates, setCollectionTicketTemplateActive } from '../api/tickets'
 import { listTicketTemplates } from '../api/ticketTemplates'
 import { listCategories } from '../api/categories'
 import { listUsers, type AppUser } from '../api/users'
@@ -370,11 +372,11 @@ export default function CollectionBuilderPage() {
       .finally(() => setGalleryLoading(false))
   }, [detailsTab])
 
-  // Load assigned ticket templates when editing
+  // Load assigned ticket templates when editing (including archived)
   useEffect(() => {
     if (!id || !isEdit) return
-    getCollectionTicketTemplates(parseInt(id, 10))
-      .then(setAssignedTicketTemplates)
+    getCollectionTicketTemplatesAll(parseInt(id, 10))
+      .then(all => setAssignedTicketTemplates(all))
       .catch(() => setAssignedTicketTemplates([]))
   }, [id, isEdit])
 
@@ -935,7 +937,7 @@ export default function CollectionBuilderPage() {
     try {
       await saveCollectionTicketTemplates(
         parseInt(id, 10),
-        assignedTicketTemplates.map(template => template.id),
+        assignedTicketTemplates.filter(t => !t.isArchived).map(template => template.id),
       )
       setTicketSaved(true)
       setTimeout(() => setTicketSaved(false), 2500)
@@ -944,6 +946,28 @@ export default function CollectionBuilderPage() {
       setTicketSaveError((err as Error).message)
     } finally {
       setTicketSaving(false)
+    }
+  }
+
+  async function archiveAssignedTicketTemplate(templateId: number) {
+    if (!id) return
+    try {
+      await setCollectionTicketTemplateActive(parseInt(id, 10), templateId, false)
+      setAssignedTicketTemplates(prev => prev.map(t => t.id === templateId ? { ...t, isArchived: true } : t))
+      showToast('Ticket archived', 'success')
+    } catch (err) {
+      showToast((err as Error).message, 'error')
+    }
+  }
+
+  async function restoreAssignedTicketTemplate(templateId: number) {
+    if (!id) return
+    try {
+      await setCollectionTicketTemplateActive(parseInt(id, 10), templateId, true)
+      setAssignedTicketTemplates(prev => prev.map(t => t.id === templateId ? { ...t, isArchived: false } : t))
+      showToast('Ticket restored', 'success')
+    } catch (err) {
+      showToast((err as Error).message, 'error')
     }
   }
 
@@ -1878,7 +1902,7 @@ export default function CollectionBuilderPage() {
               >
                 <option value="">Select a ticket template</option>
                 {availableTicketTemplates
-                  .filter(template => !assignedTicketTemplates.some(assigned => assigned.id === template.id))
+                  .filter(template => !assignedTicketTemplates.some(assigned => assigned.id === template.id && !assigned.isArchived))
                   .map(template => (
                     <option key={template.id} value={template.id}>{template.title}</option>
                   ))}
@@ -1894,13 +1918,14 @@ export default function CollectionBuilderPage() {
               </button>
             </div>
 
+            {/* Active tickets */}
             <div className="space-y-3">
-              {assignedTicketTemplates.length === 0 ? (
+              {assignedTicketTemplates.filter(t => !t.isArchived).length === 0 ? (
                 <div className="text-center py-10 text-[#94A3B8] text-sm">
                   No ticket templates assigned yet.
                 </div>
               ) : (
-                assignedTicketTemplates.map((template, index) => (
+                assignedTicketTemplates.filter(t => !t.isArchived).map((template, index, activeList) => (
                   <div
                     key={template.id}
                     className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] bg-[#FAFAFA] dark:bg-[#0F172A] p-4 flex items-start justify-between gap-4"
@@ -1922,7 +1947,7 @@ export default function CollectionBuilderPage() {
                       <button
                         type="button"
                         onClick={() => moveAssignedTicketTemplate(template.id, 1)}
-                        disabled={index === assignedTicketTemplates.length - 1}
+                        disabled={index === activeList.length - 1}
                         className="text-[#94A3B8] hover:text-[#64748B] disabled:opacity-30 transition-colors"
                         aria-label="Move ticket down"
                       >
@@ -1930,9 +1955,19 @@ export default function CollectionBuilderPage() {
                       </button>
                       <button
                         type="button"
+                        onClick={() => archiveAssignedTicketTemplate(template.id)}
+                        className="text-[#94A3B8] hover:text-amber-500 transition-colors"
+                        aria-label="Archive ticket"
+                        title="Archive ticket (hides the form, keeps existing entries)"
+                      >
+                        <Archive size={14} />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => removeAssignedTicketTemplate(template.id)}
                         className="text-[#94A3B8] hover:text-red-500 transition-colors"
                         aria-label="Remove ticket assignment"
+                        title="Remove ticket assignment"
                       >
                         <Trash2 size={14} />
                       </button>
@@ -1941,6 +1976,33 @@ export default function CollectionBuilderPage() {
                 ))
               )}
             </div>
+
+            {/* Archived tickets */}
+            {assignedTicketTemplates.some(t => t.isArchived) && (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-[#94A3B8]">Archived</div>
+                {assignedTicketTemplates.filter(t => t.isArchived).map(template => (
+                  <div
+                    key={template.id}
+                    className="rounded-lg border border-dashed border-[#E2E8F0] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A] p-4 flex items-start justify-between gap-4 opacity-60"
+                  >
+                    <div>
+                      <div className="text-sm font-semibold text-[#64748B]">{template.title}</div>
+                      <div className="mt-1 text-xs text-[#94A3B8]">{template.description || 'No description'}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => restoreAssignedTicketTemplate(template.id)}
+                      className="text-[#94A3B8] hover:text-[#2563EB] transition-colors shrink-0"
+                      aria-label="Restore ticket"
+                      title="Restore ticket (makes the form active again)"
+                    >
+                      <ArchiveRestore size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {ticketSaveError && (
               <div className="rounded border border-red-200 bg-red-50 dark:bg-red-900/20 p-3 text-red-700 dark:text-red-400 text-sm">

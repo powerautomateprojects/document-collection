@@ -86,6 +86,26 @@ export async function getCollectionTicketTemplates(collectionId: number): Promis
   return handleResponse<CollectionTicketTemplate[]>(res)
 }
 
+export async function getCollectionTicketTemplatesAll(collectionId: number): Promise<CollectionTicketTemplate[]> {
+  const res = await fetch(`/api/collections/${collectionId}/ticket-templates?includeArchived=true`, {
+    headers: authHeaders(),
+  })
+  return handleResponse<CollectionTicketTemplate[]>(res)
+}
+
+export async function setCollectionTicketTemplateActive(
+  collectionId: number,
+  templateId: number,
+  isActive: boolean,
+): Promise<void> {
+  const res = await fetch(`/api/collections/${collectionId}/ticket-templates/${templateId}`, {
+    method: 'PATCH',
+    headers: authHeaders(),
+    body: JSON.stringify({ isActive }),
+  })
+  return handleResponse<void>(res)
+}
+
 export async function saveCollectionTicketTemplates(
   collectionId: number,
   templateIds: number[],

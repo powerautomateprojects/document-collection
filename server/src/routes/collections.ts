@@ -3177,16 +3177,75 @@ router.get('/:id/ticket-templates', authenticateToken, (req: Request, res: Respo
     const collection = fetchAccessibleCollectionById(id, context)
     if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
 
-    const templates = fetchAssignedTicketTemplates(db, id)
-    res.json(templates.map(template => ({
-      id: template.ticket_template_id,
-      title: template.title,
-      description: template.description,
-      displayOrder: template.display_order,
-    })))
+    const includeArchived = req.query.includeArchived === 'true'
+
+    if (includeArchived) {
+      type AllAssignedRow = DbAssignedTicketTemplate & { ctt_is_active: number }
+      const all = db.prepare(`
+        SELECT
+          ctt.id,
+          ctt.ticket_template_id,
+          tt.title,
+          tt.description,
+          ctt.display_order,
+          ctt.is_active,
+          ctt.is_active AS ctt_is_active
+        FROM collection_ticket_templates ctt
+        JOIN ticket_templates tt ON tt.id = ctt.ticket_template_id
+        WHERE ctt.collection_id = ? AND tt.is_active = 1
+        ORDER BY ctt.is_active DESC, ctt.display_order ASC, ctt.id ASC
+      `).all(id) as AllAssignedRow[]
+      res.json(all.map(t => ({
+        id: t.ticket_template_id,
+        title: t.title,
+        description: t.description,
+        displayOrder: t.display_order,
+        isArchived: t.ctt_is_active === 0,
+      })))
+    } else {
+      const templates = fetchAssignedTicketTemplates(db, id)
+      res.json(templates.map(template => ({
+        id: template.ticket_template_id,
+        title: template.title,
+        description: template.description,
+        displayOrder: template.display_order,
+        isArchived: false,
+      })))
+    }
   } catch (err) {
     console.error('[collections] get ticket templates:', err)
     res.status(500).json({ error: 'Failed to get ticket templates' })
+  }
+})
+
+// PATCH /:id/ticket-templates/:templateId — archive or restore an assigned ticket template
+router.patch('/:id/ticket-templates/:templateId', authenticateToken, (req: Request, res: Response): void => {
+  const context = loadRequestUserContext(req)
+  const collectionId = parseInt(req.params.id, 10)
+  const templateId = parseInt(req.params.templateId, 10)
+  if (!context || isNaN(collectionId) || isNaN(templateId)) { res.status(400).json({ error: 'Invalid request' }); return }
+  if (!canManageCollectionTickets(context)) { res.status(403).json({ error: 'Manager access required' }); return }
+
+  try {
+    const db = getDb()
+    const collection = fetchAccessibleCollectionById(collectionId, context)
+    if (!collection) { res.status(404).json({ error: 'Collection not found' }); return }
+
+    const body = req.body as { isActive?: boolean }
+    if (typeof body.isActive !== 'boolean') { res.status(400).json({ error: 'isActive boolean required' }); return }
+
+    const result = db.prepare(`
+      UPDATE collection_ticket_templates
+      SET is_active = ?, updated_at = datetime('now')
+      WHERE collection_id = ? AND ticket_template_id = ?
+    `).run(body.isActive ? 1 : 0, collectionId, templateId)
+
+    if (result.changes === 0) { res.status(404).json({ error: 'Ticket template assignment not found' }); return }
+
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[collections] patch ticket template:', err)
+    res.status(500).json({ error: 'Failed to update ticket template' })
   }
 })
 
