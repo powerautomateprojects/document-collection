@@ -116,6 +116,7 @@ export function createSchema(db: AppDatabase): void {
       drive_file_id         TEXT    NOT NULL UNIQUE,
       drive_web_view_url    TEXT,
       drive_download_url    TEXT,
+      file_data             TEXT,
       created_by_user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
       created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
       updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))

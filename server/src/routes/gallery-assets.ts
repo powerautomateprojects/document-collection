@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import multer from 'multer'
+import { randomUUID } from 'crypto'
 import { getDb } from '../database/db'
 import { authenticateToken } from '../middleware/auth'
 import { isAdminOrSuperAdmin, loadRequestUserContext, resolveManagedOrganizationId } from '../middleware/organizationAccess'
@@ -24,6 +25,7 @@ interface DbGalleryAssetRow {
   mime_type: string
   size_bytes: number
   drive_file_id: string
+  file_data: string | null
   created_by_user_id: number | null
   created_at: string
   updated_at: string
@@ -125,7 +127,48 @@ router.post('/', authenticateToken, upload.single('file'), async (req: Request, 
   }
 
   if (!isGoogleDriveConfigured()) {
-    res.status(503).json({ error: 'Gallery uploads are not configured' })
+    // ── Local DB storage fallback ──────────────────────────────────────────
+    const localId = `local:${randomUUID()}`
+    const fileDataBase64 = req.file.buffer.toString('base64')
+
+    const result = db.prepare(`
+      INSERT INTO gallery_assets (
+        organization_id,
+        name,
+        alt_text,
+        tags,
+        mime_type,
+        size_bytes,
+        drive_file_id,
+        file_data,
+        created_by_user_id,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run(
+      organizationId,
+      name,
+      String(req.body.altText ?? '').trim() || null,
+      serialiseTags(typeof req.body.tags === 'string' ? req.body.tags : undefined),
+      req.file.mimetype,
+      req.file.buffer.byteLength,
+      localId,
+      fileDataBase64,
+      context.id,
+    )
+
+    const row = db.prepare(`
+      SELECT ga.*, o.name AS organization_name, 0 AS usage_count
+      FROM gallery_assets ga
+      JOIN organizations o ON o.id = ga.organization_id
+      WHERE ga.id = ?
+    `).get(Number(result.lastInsertRowid)) as DbGalleryAssetRow | undefined
+
+    if (!row) {
+      res.status(500).json({ error: 'Failed to load uploaded gallery asset' })
+      return
+    }
+
+    res.status(201).json(toApiGalleryAsset(row))
     return
   }
 
@@ -231,13 +274,26 @@ router.get('/:id/file', authenticateToken, async (req: Request, res: Response) =
 
   const db = getDb()
   const row = db.prepare(`
-    SELECT id, organization_id, drive_file_id, mime_type, name
+    SELECT id, organization_id, drive_file_id, file_data, mime_type, name
     FROM gallery_assets
     WHERE id = ?
-  `).get(id) as { id: number; organization_id: number; drive_file_id: string; mime_type: string; name: string } | undefined
+  `).get(id) as { id: number; organization_id: number; drive_file_id: string; file_data: string | null; mime_type: string; name: string } | undefined
 
   if (!row || (context.role !== 'super_admin' && row.organization_id !== context.organizationId)) {
     res.status(404).json({ error: 'Gallery asset not found' })
+    return
+  }
+
+  // Local DB storage — serve directly from base64 field
+  if (row.drive_file_id.startsWith('local:')) {
+    if (!row.file_data) {
+      res.status(404).json({ error: 'Gallery asset file data not found' })
+      return
+    }
+    const buffer = Buffer.from(row.file_data, 'base64')
+    res.setHeader('Content-Type', row.mime_type)
+    res.setHeader('Cache-Control', 'private, max-age=300')
+    res.send(buffer)
     return
   }
 
@@ -288,10 +344,14 @@ router.delete('/:id', authenticateToken, async (req: Request, res: Response) => 
   }
 
   db.prepare('DELETE FROM gallery_assets WHERE id = ?').run(id)
-  try {
-    await deleteDriveFile(asset.drive_file_id)
-  } catch {
-    // Ignore missing external files after DB delete.
+
+  // Only attempt Drive deletion for non-local assets
+  if (!asset.drive_file_id.startsWith('local:')) {
+    try {
+      await deleteDriveFile(asset.drive_file_id)
+    } catch {
+      // Ignore missing external files after DB delete.
+    }
   }
 
   res.status(204).send()

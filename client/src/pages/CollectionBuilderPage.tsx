@@ -1888,7 +1888,7 @@ export default function CollectionBuilderPage() {
               <h2 className="text-xs font-semibold uppercase tracking-wide text-[#64748B]">
                 Add Ticket
               </h2>
-              <span className="text-xs text-[#64748B]">Manage templates in Forms, then assign them here.</span>
+              <span className="text-xs text-[#64748B]">Manage templates in Tickets, then assign them here.</span>
             </div>
             <p className="text-xs text-[#64748B]">
               Assign one or more reusable ticket templates to this collection. Each assigned ticket appears separately in Records for every submission.

@@ -1728,12 +1728,22 @@ function runMigrations(db: AppDatabase): void {
         drive_file_id         TEXT    NOT NULL UNIQUE,
         drive_web_view_url    TEXT,
         drive_download_url    TEXT,
+        file_data             TEXT,
         created_by_user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
         created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
         updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
       )
     `)
     console.log('[db] Migration: created gallery_assets table')
+  } else {
+    const existingGalleryCols = db
+      .prepare(`PRAGMA table_info(gallery_assets)`)
+      .all() as Array<{ name: string }>
+    const galleryColNames = new Set(existingGalleryCols.map(c => c.name))
+    if (!galleryColNames.has('file_data')) {
+      db.exec(`ALTER TABLE gallery_assets ADD COLUMN file_data TEXT`)
+      console.log('[db] Migration: added gallery_assets.file_data for local storage fallback')
+    }
   }
 
   // ── Repair user_locations FK if broken by ALTER TABLE users RENAME ───────────

@@ -665,7 +665,7 @@ export default function TicketDesignerPage() {
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <h1 className="text-xl font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Forms</h1>
+            <h1 className="text-xl font-semibold text-[#1E293B] dark:text-[#F1F5F9]">Tickets</h1>
             <p className="text-sm text-[#64748B] mt-1">Create reusable ticket templates and assign them to collections from Add Ticket.</p>
           </div>
           <button

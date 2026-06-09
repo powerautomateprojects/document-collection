@@ -1138,14 +1138,27 @@ router.get('/public/:slug', optionalAuthenticateToken, (req: Request, res: Respo
 router.get('/public/:slug/cover-photo', async (req: Request, res: Response) => {
   const db = getDb()
   const row = db.prepare(`
-    SELECT c.status, ga.drive_file_id
+    SELECT c.status, ga.drive_file_id, ga.file_data, ga.mime_type
     FROM collections c
     JOIN gallery_assets ga ON ga.id = c.cover_photo_asset_id
     WHERE c.slug = ?
-  `).get(req.params.slug) as { status: 'draft' | 'published'; drive_file_id: string } | undefined
+  `).get(req.params.slug) as { status: 'draft' | 'published'; drive_file_id: string; file_data: string | null; mime_type: string } | undefined
 
   if (!row || row.status !== 'published') {
     res.status(404).json({ error: 'Cover photo not found' })
+    return
+  }
+
+  // Local DB storage — serve directly from base64 field
+  if (row.drive_file_id.startsWith('local:')) {
+    if (!row.file_data) {
+      res.status(404).json({ error: 'Cover photo file data not found' })
+      return
+    }
+    const buffer = Buffer.from(row.file_data, 'base64')
+    res.setHeader('Content-Type', row.mime_type)
+    res.setHeader('Cache-Control', 'public, max-age=300')
+    res.send(buffer)
     return
   }
 

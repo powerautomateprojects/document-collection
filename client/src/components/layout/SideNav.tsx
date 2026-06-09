@@ -37,7 +37,7 @@ const NAV_ITEMS: NavItem[] = [
   { icon: BarChart3,       label: 'Reports',         to: '/reports'          },
   { icon: Sparkles,        label: 'AI Summary',      to: '/ai-summary',      roles: ['administrator'] },
   { icon: Settings,        label: 'Settings',        to: '/settings'         },
-  { icon: ClipboardList,   label: 'Forms',           to: '/ticket-designer'  },
+  { icon: ClipboardList,   label: 'Tickets',         to: '/ticket-designer'  },
 ]
 
 const USER_NAV_ITEMS: NavItem[] = [
