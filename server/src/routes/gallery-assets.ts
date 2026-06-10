@@ -126,6 +126,37 @@ router.post('/', authenticateToken, upload.single('file'), async (req: Request, 
     return
   }
 
+  const requestedOrganizationId = req.body.organizationId == null
+    ? null
+    : Number.parseInt(String(req.body.organizationId), 10)
+  const organizationId = resolveManagedOrganizationId(
+    context,
+    Number.isInteger(requestedOrganizationId) ? requestedOrganizationId : null,
+  )
+
+  if (!organizationId) {
+    res.status(400).json({ error: 'An organization must be selected' })
+    return
+  }
+
+  if (!req.file) {
+    res.status(400).json({ error: 'An image file is required' })
+    return
+  }
+
+  if (!req.file.mimetype.startsWith('image/')) {
+    res.status(400).json({ error: 'Only image uploads are supported' })
+    return
+  }
+
+  const name = String(req.body.name ?? req.file.originalname).trim()
+  if (!name) {
+    res.status(400).json({ error: 'Image name is required' })
+    return
+  }
+
+  const db = getDb()
+
   if (!isGoogleDriveConfigured()) {
     // ── Local DB storage fallback ──────────────────────────────────────────
     const localId = `local:${randomUUID()}`
@@ -172,36 +203,6 @@ router.post('/', authenticateToken, upload.single('file'), async (req: Request, 
     return
   }
 
-  const requestedOrganizationId = req.body.organizationId == null
-    ? null
-    : Number.parseInt(String(req.body.organizationId), 10)
-  const organizationId = resolveManagedOrganizationId(
-    context,
-    Number.isInteger(requestedOrganizationId) ? requestedOrganizationId : null,
-  )
-
-  if (!organizationId) {
-    res.status(400).json({ error: 'An organization must be selected' })
-    return
-  }
-
-  if (!req.file) {
-    res.status(400).json({ error: 'An image file is required' })
-    return
-  }
-
-  if (!req.file.mimetype.startsWith('image/')) {
-    res.status(400).json({ error: 'Only image uploads are supported' })
-    return
-  }
-
-  const name = String(req.body.name ?? req.file.originalname).trim()
-  if (!name) {
-    res.status(400).json({ error: 'Image name is required' })
-    return
-  }
-
-  const db = getDb()
   try {
     const uploaded = await uploadBufferToDrive({
       fileName: req.file.originalname,
