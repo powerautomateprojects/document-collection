@@ -29,7 +29,7 @@ import type {
 } from '../types'
 import { useAuth } from '../contexts/AuthContext'
 
-type RecordsView = 'summary' | 'individual' | 'tickets'
+type RecordsView = 'summary' | 'individual' | 'tickets' | 'ticket-export'
 type SubmissionTab = 'general' | 'comments'
 type TicketDrawerTab = 'details' | 'history'
 
@@ -803,6 +803,92 @@ function buildCollectionCsv(collection: Collection, responses: CollectionRespons
   })
 
   return [header.map(toCsvCell).join(','), ...lines].join('\n')
+}
+
+function formatTicketFieldValueForCsv(field: TicketField | undefined, value: string | null): string {
+  const raw = value ?? ''
+  if (!raw || !field) return raw
+  switch (field.type) {
+    case 'multiple_choice': {
+      try {
+        const items = JSON.parse(raw) as string[]
+        return Array.isArray(items) ? items.join('; ') : raw
+      } catch {
+        return raw
+      }
+    }
+    case 'confirmation':
+      return raw === 'true' ? 'Confirmed' : 'Not confirmed'
+    case 'signature':
+      return raw.startsWith('data:image') ? '[signature captured]' : raw
+    case 'attachment': {
+      const attachments = parseAttachmentValue(raw)
+      return attachments.length > 0 ? attachments.map(a => a.fileName).join('; ') : raw
+    }
+    default:
+      return raw
+  }
+}
+
+function buildTicketsCsv(
+  tickets: CollectionTicketRow[],
+  templates: CollectionTicketTemplate[],
+  fieldsByTemplate: Record<number, TicketField[] | 'loading'>,
+): string {
+  const multipleTemplates = templates.length > 1
+  const fieldColumns: Array<{ header: string; templateId: number; fieldId: number; field: TicketField }> = []
+  templates.forEach(template => {
+    const fields = fieldsByTemplate[template.id]
+    if (!fields || fields === 'loading') return
+    fields.forEach(field => {
+      if (field.id === undefined) return
+      const header = multipleTemplates ? `${template.title}: ${field.label}` : field.label
+      fieldColumns.push({ header, templateId: template.id, fieldId: field.id, field })
+    })
+  })
+
+  const fixedHeaders = ['Submission', 'Submitted At', 'Status', 'Ticket Type', 'Closed By', 'Closed At']
+  const allHeaders = [...fixedHeaders, ...fieldColumns.map(c => c.header)]
+
+  const lines = tickets.map(ticket => {
+    const submitter = ticket.submitterName ?? ticket.submitterEmail ?? `#${ticket.collectionResponseId}`
+    const submittedAt = ticket.submittedAt ? formatSubmittedAt(ticket.submittedAt) : ''
+    const status = ticket.finalized ? 'Closed' : 'Open'
+    const ticketType = ticket.ticketTitle ?? ''
+    const closedBy = ticket.finalizedByName ?? ''
+    const closedAt = ticket.finalizedAt ? formatSubmittedAt(ticket.finalizedAt) : ''
+    const fieldValues = fieldColumns.map(col => {
+      if (col.templateId !== ticket.ticketTemplateId) return ''
+      const val = ticket.values.find(v => v.fieldId === col.fieldId)?.value ?? null
+      return formatTicketFieldValueForCsv(col.field, val)
+    })
+    return [submitter, submittedAt, status, ticketType, closedBy, closedAt, ...fieldValues]
+      .map(toCsvCell)
+      .join(',')
+  })
+
+  return [allHeaders.map(toCsvCell).join(','), ...lines].join('\n')
+}
+
+function downloadTicketsCsv(
+  collection: Collection,
+  tickets: CollectionTicketRow[],
+  templates: CollectionTicketTemplate[],
+  fieldsByTemplate: Record<number, TicketField[] | 'loading'>,
+): void {
+  const safeFilename = (collection.title.trim() || `collection-${collection.id}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || `collection-${collection.id}`
+  const blob = new Blob([buildTicketsCsv(tickets, templates, fieldsByTemplate)], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${safeFilename}-tickets.csv`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
 }
 
 function downloadCollectionCsv(collection: Collection, responses: CollectionResponse[]): void {
@@ -1737,6 +1823,19 @@ export default function RecordsPage() {
       })
   }, [responses, selectedCollection])
 
+  const filteredTickets = useMemo(
+    () =>
+      allTickets.filter(ticket => {
+        const matchesTemplate =
+          ticketTemplateFilter === 'all' || ticket.ticketTemplateId === ticketTemplateFilter
+        const matchesStatus =
+          ticketStatusFilter === 'all' ||
+          (ticketStatusFilter === 'closed' ? ticket.finalized : !ticket.finalized)
+        return matchesTemplate && matchesStatus
+      }),
+    [allTickets, ticketTemplateFilter, ticketStatusFilter],
+  )
+
   if (loadingCollections) {
     return (
       <div className="flex items-center justify-center h-40 text-[#64748B]">
@@ -1830,6 +1929,7 @@ export default function RecordsPage() {
                 {responses.length} submitted item{responses.length !== 1 ? 's' : ''}
               </p>
             </div>
+            {view !== 'ticket-export' && (
             <div className="flex items-center gap-3 flex-wrap">
               <div className="inline-flex rounded overflow-hidden border border-[#CBD5E1] dark:border-[#334155] w-fit">
                 <button
@@ -1905,6 +2005,7 @@ export default function RecordsPage() {
                 </div>
               )}
             </div>
+            )}
           </div>
           {error && (
             <div className="rounded border border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-800 p-3 text-red-700 dark:text-red-400 text-sm">
@@ -2755,14 +2856,6 @@ export default function RecordsPage() {
       {view === 'tickets' && selectedCollection && (
         <div className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
           {(() => {
-            const filteredTickets = allTickets.filter(ticket => {
-              const matchesTemplate = ticketTemplateFilter === 'all' || ticket.ticketTemplateId === ticketTemplateFilter
-              const matchesStatus =
-                ticketStatusFilter === 'all' ||
-                (ticketStatusFilter === 'closed' ? ticket.finalized : !ticket.finalized)
-              return matchesTemplate && matchesStatus
-            })
-
             return (
               <>
                 <div className="px-5 py-3 border-b border-[#E2E8F0] dark:border-[#334155] space-y-3">
@@ -2814,9 +2907,27 @@ export default function RecordsPage() {
                         {f.charAt(0).toUpperCase() + f.slice(1)}
                       </button>
                     ))}
-                    <span className="ml-auto text-xs text-[#94A3B8]">
-                      {filteredTickets.length} ticket{filteredTickets.length !== 1 ? 's' : ''}
-                    </span>
+                    <div className="ml-auto flex items-center gap-2">
+                      <span className="text-xs text-[#94A3B8]">
+                        {filteredTickets.length} ticket{filteredTickets.length !== 1 ? 's' : ''}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const temps =
+                            ticketTemplateFilter === 'all'
+                              ? collectionTicketTemplates
+                              : collectionTicketTemplates.filter(t => t.id === ticketTemplateFilter)
+                          temps.forEach(t => loadTicketFields(t.id))
+                          setView('ticket-export')
+                        }}
+                        disabled={filteredTickets.length === 0}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-[#2563EB] text-[#2563EB] text-xs font-medium hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50 transition-colors"
+                      >
+                        <Download size={12} />
+                        Export
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -2922,6 +3033,163 @@ export default function RecordsPage() {
           })()}
         </div>
       )}
+
+      {/* ── Ticket export preview ─────────────────────────────────────────── */}
+      {view === 'ticket-export' && selectedCollection && (() => {
+        const exportTemplates =
+          ticketTemplateFilter === 'all'
+            ? collectionTicketTemplates
+            : collectionTicketTemplates.filter(t => t.id === ticketTemplateFilter)
+        const multipleTemplates = exportTemplates.length > 1
+        const exportFieldColumns: Array<{ header: string; templateId: number; fieldId: number; field: TicketField }> = []
+        exportTemplates.forEach(template => {
+          const fields = ticketFieldsByTemplate[template.id]
+          if (!fields || fields === 'loading') return
+          fields.forEach(field => {
+            if (field.id === undefined) return
+            const header = multipleTemplates ? `${template.title}: ${field.label}` : field.label
+            exportFieldColumns.push({ header, templateId: template.id, fieldId: field.id, field })
+          })
+        })
+        const fieldsLoading = exportTemplates.some(
+          t => ticketFieldsByTemplate[t.id] === 'loading' || ticketFieldsByTemplate[t.id] === undefined,
+        )
+        const activeTemplateName =
+          ticketTemplateFilter !== 'all'
+            ? collectionTicketTemplates.find(t => t.id === ticketTemplateFilter)?.title ?? null
+            : null
+
+        return (
+          <div className="space-y-4">
+            <div className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setView('tickets')}
+                  className="inline-flex items-center gap-1.5 text-sm text-[#64748B] hover:text-[#1E293B] dark:hover:text-[#F1F5F9] transition-colors"
+                >
+                  ← Back to Tickets
+                </button>
+                <span className="text-[#CBD5E1] dark:text-[#475569] select-none">|</span>
+                <span className="text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9]">
+                  {selectedCollection.title}
+                </span>
+                {(activeTemplateName || ticketStatusFilter !== 'all') && (
+                  <span className="text-xs text-[#64748B]">
+                    —
+                    {activeTemplateName ? ` Template: ${activeTemplateName}` : ''}
+                    {ticketStatusFilter !== 'all'
+                      ? ` · Status: ${ticketStatusFilter.charAt(0).toUpperCase() + ticketStatusFilter.slice(1)}`
+                      : ''}
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  downloadTicketsCsv(selectedCollection, filteredTickets, exportTemplates, ticketFieldsByTemplate)
+                }
+                disabled={filteredTickets.length === 0 || fieldsLoading}
+                className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded bg-[#2563EB] px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+              >
+                <Download size={14} />
+                Export to CSV
+              </button>
+            </div>
+
+            <div className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg overflow-hidden">
+              {filteredTickets.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-32 gap-2 text-[#94A3B8]">
+                  <Clipboard size={28} className="opacity-40" />
+                  <p className="text-sm">No tickets to preview.</p>
+                </div>
+              ) : fieldsLoading ? (
+                <div className="flex items-center justify-center h-32 text-[#64748B] text-sm">
+                  Loading ticket fields…
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#E2E8F0] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A]">
+                        <th className="text-left px-4 py-2.5 font-medium text-[#64748B] text-xs uppercase tracking-wide whitespace-nowrap">Submission</th>
+                        <th className="text-left px-4 py-2.5 font-medium text-[#64748B] text-xs uppercase tracking-wide whitespace-nowrap">Submitted At</th>
+                        <th className="text-left px-4 py-2.5 font-medium text-[#64748B] text-xs uppercase tracking-wide whitespace-nowrap">Status</th>
+                        <th className="text-left px-4 py-2.5 font-medium text-[#64748B] text-xs uppercase tracking-wide whitespace-nowrap">Ticket Type</th>
+                        <th className="text-left px-4 py-2.5 font-medium text-[#64748B] text-xs uppercase tracking-wide whitespace-nowrap">Closed By</th>
+                        <th className="text-left px-4 py-2.5 font-medium text-[#64748B] text-xs uppercase tracking-wide whitespace-nowrap">Closed At</th>
+                        {exportFieldColumns.map(col => (
+                          <th
+                            key={`${col.templateId}-${col.fieldId}`}
+                            className="text-left px-4 py-2.5 font-medium text-[#64748B] text-xs uppercase tracking-wide whitespace-nowrap"
+                          >
+                            {col.header}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredTickets.map((ticket, i) => {
+                        const submitter =
+                          ticket.submitterName ?? ticket.submitterEmail ?? `#${ticket.collectionResponseId}`
+                        const submittedLabel = ticket.submittedAt ? formatSubmittedAt(ticket.submittedAt) : '—'
+                        const closedAtLabel = ticket.finalizedAt ? formatSubmittedAt(ticket.finalizedAt) : '—'
+                        return (
+                          <tr
+                            key={ticket.id}
+                            className={[
+                              'border-b border-[#E2E8F0] dark:border-[#334155] last:border-0',
+                              i % 2 === 1 ? 'bg-[#F8FAFC] dark:bg-[#0F172A]/50' : '',
+                            ].join(' ')}
+                          >
+                            <td className="px-4 py-3 text-[#1E293B] dark:text-[#F1F5F9] font-medium whitespace-nowrap">
+                              {submitter}
+                            </td>
+                            <td className="px-4 py-3 text-[#64748B] whitespace-nowrap">{submittedLabel}</td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              {ticket.finalized ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-[2px] text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
+                                  <Lock size={10} />
+                                  Closed
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-[2px] text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400">
+                                  Open
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-[#1E293B] dark:text-[#F1F5F9] whitespace-nowrap">
+                              {ticket.ticketTitle ?? '—'}
+                            </td>
+                            <td className="px-4 py-3 text-[#64748B] whitespace-nowrap text-xs">
+                              {ticket.finalizedByName ?? '—'}
+                            </td>
+                            <td className="px-4 py-3 text-[#64748B] whitespace-nowrap text-xs">{closedAtLabel}</td>
+                            {exportFieldColumns.map(col => {
+                              const val =
+                                col.templateId === ticket.ticketTemplateId
+                                  ? (ticket.values.find(v => v.fieldId === col.fieldId)?.value ?? null)
+                                  : null
+                              return (
+                                <td
+                                  key={`${col.templateId}-${col.fieldId}`}
+                                  className="px-4 py-3 text-[#475569] dark:text-[#94A3B8] max-w-[200px] truncate"
+                                >
+                                  {formatTicketFieldValueForCsv(col.field, val) || '—'}
+                                </td>
+                              )
+                            })}
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
