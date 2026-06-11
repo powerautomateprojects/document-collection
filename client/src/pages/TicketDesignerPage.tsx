@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronUp, Plus, Save, Settings2, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, Eye, Plus, Save, Settings2, Trash2 } from 'lucide-react'
 import MatrixLikertConfigModal from '../components/collections/MatrixLikertConfigModal'
 import TableWizardModal from '../components/collections/TableWizardModal'
+import TicketPreviewModal from '../components/collections/TicketPreviewModal'
 import RichTextEditor from '../components/common/RichTextEditor'
 import {
   createTicketTemplate,
@@ -418,6 +419,7 @@ export default function TicketDesignerPage() {
   const [fieldError, setFieldError] = useState<string | null>(null)
   const [ticketWizardField, setTicketWizardField] = useState<string | null>(null)
   const [ticketMatrixConfigField, setTicketMatrixConfigField] = useState<string | null>(null)
+  const [showPreview, setShowPreview] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -662,6 +664,15 @@ export default function TicketDesignerPage() {
         />
       )}
 
+      {showPreview && (
+        <TicketPreviewModal
+          fields={fields}
+          templateTitle={title}
+          templateDescription={description}
+          onClose={() => setShowPreview(false)}
+        />
+      )}
+
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
@@ -717,15 +728,25 @@ export default function TicketDesignerPage() {
                 <div className="bg-white dark:bg-[#1E293B] border border-[#E2E8F0] dark:border-[#334155] rounded-lg p-5 space-y-4">
                   <div className="flex items-center justify-between gap-4 flex-wrap">
                     <h2 className="text-xs font-semibold uppercase tracking-wide text-[#64748B]">Template Details</h2>
-                    <button
-                      type="button"
-                      onClick={handleSaveTemplate}
-                      disabled={savingTemplate}
-                      className="inline-flex items-center gap-2 rounded bg-[#0F766E] px-4 py-2 text-sm font-semibold text-white hover:bg-[#115E59] disabled:opacity-50"
-                    >
-                      <Save size={14} />
-                      {savingTemplate ? 'Saving…' : 'Save Template'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowPreview(true)}
+                        className="inline-flex items-center gap-2 rounded border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#0F172A] px-4 py-2 text-sm font-semibold text-[#1E293B] dark:text-[#F1F5F9] hover:bg-[#F8FAFC] dark:hover:bg-[#1E293B]"
+                      >
+                        <Eye size={14} />
+                        Preview
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveTemplate}
+                        disabled={savingTemplate}
+                        className="inline-flex items-center gap-2 rounded bg-[#0F766E] px-4 py-2 text-sm font-semibold text-white hover:bg-[#115E59] disabled:opacity-50"
+                      >
+                        <Save size={14} />
+                        {savingTemplate ? 'Saving…' : 'Save Template'}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
