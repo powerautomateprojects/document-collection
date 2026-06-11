@@ -1137,10 +1137,19 @@ function runMigrations(db: AppDatabase): void {
         status              TEXT    NOT NULL DEFAULT 'uploaded'
                                    CHECK(status IN ('uploaded', 'linked', 'deleted')),
         created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
-        deleted_at          TEXT
+        deleted_at          TEXT,
+        file_data           TEXT
       )
     `)
     console.log('[db] Migration: created response_attachments table')
+  } else {
+    const existingAttachmentCols = db
+      .prepare(`PRAGMA table_info(response_attachments)`)
+      .all() as Array<{ name: string }>
+    if (!existingAttachmentCols.some(c => c.name === 'file_data')) {
+      db.exec(`ALTER TABLE response_attachments ADD COLUMN file_data TEXT`)
+      console.log('[db] Migration: added response_attachments.file_data for local storage fallback')
+    }
   }
 
   if (!tableExists(db, 'notification_deliveries')) {

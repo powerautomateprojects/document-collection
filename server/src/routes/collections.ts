@@ -168,6 +168,7 @@ interface DbAttachmentRow {
   drive_file_id: string
   drive_web_view_url: string | null
   drive_download_url: string | null
+  file_data: string | null
   status: 'uploaded' | 'linked' | 'deleted'
   respondent_email?: string | null
   organization_id?: number | null
@@ -1269,6 +1270,54 @@ router.post('/public/:slug/attachments', optionalAuthenticateToken, attachmentUp
 
   const uploadToken = crypto.randomUUID()
 
+  if (!isGoogleDriveConfigured()) {
+    // ── Local DB storage fallback ──────────────────────────────────────────
+    const localId = `local:${crypto.randomUUID()}`
+    const fileDataBase64 = req.file.buffer.toString('base64')
+
+    const result = db
+      .prepare(`
+        INSERT INTO response_attachments (
+          collection_id,
+          response_id,
+          field_id,
+          uploaded_by_user_id,
+          temp_upload_token,
+          file_name,
+          mime_type,
+          size_bytes,
+          drive_file_id,
+          drive_web_view_url,
+          drive_download_url,
+          file_data,
+          status
+        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 'uploaded')
+      `)
+      .run(
+        col.id,
+        fieldId,
+        req.user?.sub ?? null,
+        uploadToken,
+        req.file.originalname,
+        req.file.mimetype || 'application/octet-stream',
+        req.file.buffer.byteLength,
+        localId,
+        fileDataBase64,
+      )
+
+    const attachmentId = Number(result.lastInsertRowid)
+    res.status(201).json({
+      attachmentId,
+      fileName: req.file.originalname,
+      mimeType: req.file.mimetype || 'application/octet-stream',
+      sizeBytes: req.file.buffer.byteLength,
+      downloadUrl: buildAttachmentDownloadUrl(attachmentId),
+      webViewUrl: null,
+      uploadToken,
+    })
+    return
+  }
+
   try {
     const uploaded = await uploadBufferToDrive({
       fileName: req.file.originalname,
@@ -1384,10 +1433,12 @@ router.delete('/public/:slug/attachments/:attachmentId', optionalAuthenticateTok
     return
   }
 
-  try {
-    await deleteDriveFile(attachment.drive_file_id)
-  } catch {
-    // If the Drive file is already gone, continue and clean up the metadata row.
+  if (!attachment.drive_file_id.startsWith('local:')) {
+    try {
+      await deleteDriveFile(attachment.drive_file_id)
+    } catch {
+      // If the Drive file is already gone, continue and clean up the metadata row.
+    }
   }
 
   db.prepare(`
@@ -1428,6 +1479,7 @@ router.get('/attachments/:attachmentId/download', authenticateToken, async (req:
         ra.drive_file_id,
         ra.drive_web_view_url,
         ra.drive_download_url,
+        ra.file_data,
         ra.status,
         cr.respondent_email,
         c.organization_id
@@ -1457,6 +1509,20 @@ router.get('/attachments/:attachmentId/download', authenticateToken, async (req:
 
   if (!permitted) {
     res.status(403).json({ error: 'Access denied' })
+    return
+  }
+
+  // Local DB storage — serve directly from base64 field
+  if (attachment.drive_file_id.startsWith('local:')) {
+    if (!attachment.file_data) {
+      res.status(404).json({ error: 'Attachment file data not found' })
+      return
+    }
+    const buffer = Buffer.from(attachment.file_data, 'base64')
+    res.setHeader('Content-Type', attachment.mime_type)
+    res.setHeader('Content-Disposition', `inline; filename="${sanitizeDownloadFilename(attachment.file_name)}"`)
+    res.setHeader('Cache-Control', 'private, max-age=300')
+    res.send(buffer)
     return
   }
 
