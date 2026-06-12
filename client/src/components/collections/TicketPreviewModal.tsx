@@ -56,11 +56,11 @@ function PreviewFieldCard({ field }: { field: BuilderField }) {
           dangerouslySetInnerHTML={{ __html: field.label || 'Comment preview' }}
         />
       ) : field.type === 'long_text' ? (
-        <textarea className={inputClass} rows={3} disabled placeholder="Enter value…" />
+        <textarea className={inputClass} rows={3} placeholder="Enter value…" />
       ) : field.type === 'date' ? (
-        <input type="date" className={inputClass} disabled />
+        <input type="date" className={inputClass} />
       ) : field.type === 'single_choice' ? (
-        <select className={inputClass} disabled>
+        <select className={inputClass}>
           <option value="">— select —</option>
           {(field.options ?? []).filter(option => option !== '__DCP_OTHER_OPTION__').map(option => (
             <option key={option} value={option}>{option || 'Option'}</option>
@@ -70,7 +70,7 @@ function PreviewFieldCard({ field }: { field: BuilderField }) {
         <div className="space-y-2">
           {(field.options ?? []).filter(option => option !== '__DCP_OTHER_OPTION__').map(option => (
             <label key={option} className="flex items-center gap-2 text-sm text-[#1E293B] dark:text-[#F1F5F9]">
-              <input type="checkbox" disabled className="accent-[#2563EB]" />
+              <input type="checkbox" className="accent-[#2563EB]" />
               <span>{option || 'Option'}</span>
             </label>
           ))}
@@ -81,7 +81,6 @@ function PreviewFieldCard({ field }: { field: BuilderField }) {
             <button
               key={n}
               type="button"
-              disabled
               className={['h-8 w-8 rounded text-sm font-semibold', n <= 3 ? 'bg-[#2563EB] text-white' : 'bg-[#E2E8F0] text-[#64748B] dark:bg-[#334155] dark:text-[#CBD5E1]'].join(' ')}
             >
               {n}
@@ -90,7 +89,7 @@ function PreviewFieldCard({ field }: { field: BuilderField }) {
         </div>
       ) : field.type === 'confirmation' ? (
         <label className="flex items-center gap-2 text-sm text-[#1E293B] dark:text-[#F1F5F9]">
-          <input type="checkbox" disabled className="accent-[#2563EB]" />
+          <input type="checkbox" className="accent-[#2563EB]" />
           I confirm
         </label>
       ) : field.type === 'custom_table' ? (
@@ -122,7 +121,7 @@ function PreviewFieldCard({ field }: { field: BuilderField }) {
           </table>
         </div>
       ) : (
-        <input className={inputClass} type="text" disabled placeholder="Enter value…" />
+        <input className={inputClass} type="text" placeholder="Enter value…" />
       )}
     </div>
   )

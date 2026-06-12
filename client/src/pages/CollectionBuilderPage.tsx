@@ -1382,13 +1382,13 @@ export default function CollectionBuilderPage() {
                 <label htmlFor={`${formId}-description`} className={LABEL}>
                   Description
                 </label>
-                <input
+                <textarea
                   id={`${formId}-description`}
-                  type="text"
+                  rows={3}
                   placeholder="Briefly describe the purpose of this collection"
                   value={description}
                   onChange={e => setDescription(e.target.value)}
-                  className={INPUT}
+                  className={`${INPUT} min-h-[72px] resize-y`}
                 />
               </div>
               <div>
@@ -2029,28 +2029,48 @@ export default function CollectionBuilderPage() {
               Assign one or more reusable ticket templates to this collection. Each assigned ticket appears separately in Records for every submission.
             </p>
 
-            <div className="flex flex-col sm:flex-row gap-3">
-              <select
-                value={selectedTicketTemplateId}
-                onChange={e => setSelectedTicketTemplateId(e.target.value)}
-                className={`${INPUT} flex-1`}
-              >
-                <option value="">Select a ticket template</option>
-                {availableTicketTemplates
-                  .filter(template => !assignedTicketTemplates.some(assigned => assigned.id === template.id && !assigned.isArchived))
-                  .map(template => (
-                    <option key={template.id} value={template.id}>{template.title}</option>
-                  ))}
-              </select>
-              <button
-                type="button"
-                onClick={addAssignedTicketTemplate}
-                disabled={!selectedTicketTemplateId}
-                className="inline-flex items-center justify-center gap-2 rounded border border-[#2563EB] px-4 py-2 text-sm font-semibold text-[#2563EB] hover:bg-blue-50 disabled:opacity-50"
-              >
-                <Plus size={14} />
-                Add Ticket
-              </button>
+            <div className="space-y-3">
+              <div className="rounded border border-[#E2E8F0] dark:border-[#334155] bg-[#FAFAFA] dark:bg-[#0F172A] p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-[#64748B] mb-2">Available templates</div>
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  {availableTicketTemplates
+                    .filter(template => !assignedTicketTemplates.some(assigned => assigned.id === template.id && !assigned.isArchived))
+                    .length === 0 ? (
+                      <div className="text-sm text-[#64748B]">No unassigned ticket templates are available.</div>
+                    ) : (
+                      availableTicketTemplates
+                        .filter(template => !assignedTicketTemplates.some(assigned => assigned.id === template.id && !assigned.isArchived))
+                        .map(template => (
+                          <button
+                            key={template.id}
+                            type="button"
+                            onClick={() => setSelectedTicketTemplateId(String(template.id))}
+                            className={[
+                              'w-full rounded border px-3 py-3 text-left transition-colors',
+                              selectedTicketTemplateId === String(template.id)
+                                ? 'border-[#2563EB] bg-blue-50 dark:bg-blue-900/20'
+                                : 'border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#111827] hover:border-[#BFDBFE] dark:hover:border-[#475569]',
+                            ].join(' ')}
+                          >
+                            <div className="text-sm font-semibold text-[#1E293B] dark:text-[#F1F5F9]">{template.title}</div>
+                            <div className="mt-1 text-xs text-[#64748B]">{template.description || 'No description provided.'}</div>
+                          </button>
+                        ))
+                    )}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={addAssignedTicketTemplate}
+                  disabled={!selectedTicketTemplateId}
+                  className="inline-flex items-center justify-center gap-2 rounded border border-[#2563EB] px-4 py-2 text-sm font-semibold text-[#2563EB] hover:bg-blue-50 disabled:opacity-50"
+                >
+                  <Plus size={14} />
+                  Add Selected Ticket
+                </button>
+              </div>
             </div>
 
             {/* Active tickets */}
