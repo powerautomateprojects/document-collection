@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { getPublicSetting } from '../api/settings'
 import { getPublicSummaryStats, type PublicSummaryStats } from '../api/stats'
 import type { User, UserRole } from '../types'
+import { sanitizeRichText } from '../utils/richText'
 
 const ROLE_LABELS: Record<UserRole, string> = {
   super_admin: 'SUPER ADMIN',
@@ -197,9 +198,10 @@ export default function LoginPage() {
           <h1 className="text-3xl md:text-[2.5rem] font-bold leading-tight mb-5">
             Sign in to Data Collection Pro
           </h1>
-          <p className="text-white/70 text-sm leading-relaxed">
-            {loginMessage}
-          </p>
+          <div
+            className="text-white/70 text-sm leading-relaxed [&_p]:mb-3 [&_strong]:font-semibold [&_em]:italic [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5"
+            dangerouslySetInnerHTML={{ __html: sanitizeRichText(loginMessage) }}
+          />
         </div>
 
         {/* Stats */}

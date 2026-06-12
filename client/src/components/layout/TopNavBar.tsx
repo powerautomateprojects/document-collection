@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Bell, Sun, Moon, UserCircle, LogOut, Layers } from 'lucide-react'
+import { Bell, Sun, Moon, UserCircle, LogOut, Layers, Info } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import {
   getUnreadNotificationCount,
@@ -75,7 +75,7 @@ export default function TopNavBar({ onAppIconClick }: TopNavBarProps) {
     }
 
     if (!n.collectionId || !n.collectionSlug) {
-      navigate('/notifications')
+      navigate('/dashboard')
       return
     }
 
@@ -297,6 +297,17 @@ export default function TopNavBar({ onAppIconClick }: TopNavBarProps) {
                   </p>
                 )}
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setProfileOpen(false)
+                  navigate('/about')
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[#64748B] hover:bg-[#F1F5F9] dark:hover:bg-[#1E293B] hover:text-[#1E293B] dark:hover:text-[#F1F5F9] transition-colors"
+              >
+                <Info size={14} />
+                About
+              </button>
               <button
                 onClick={handleSignOut}
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[#64748B] hover:bg-[#F1F5F9] dark:hover:bg-[#1E293B] hover:text-[#1E293B] dark:hover:text-[#F1F5F9] transition-colors"

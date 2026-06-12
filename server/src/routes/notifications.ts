@@ -1,9 +1,12 @@
 import { Router, type Request, type Response } from 'express'
+import { getDb } from '../database/db'
 import { authenticateToken } from '../middleware/auth'
 import { loadRequestUserContext, isAdministrator } from '../middleware/organizationAccess'
 import {
   addNotificationEmailCc,
+  createNotificationEventWithDeliveries,
   deleteNotificationEmailCc,
+  dismissInAppNotification,
   generateDueDateNotifications,
   getNotificationPreferences,
   getUnreadInAppNotificationCount,
@@ -190,6 +193,143 @@ router.patch('/read-all', authenticateToken, (req: Request, res: Response) => {
   }
 
   res.json({ updated: markAllInAppNotificationsRead(context.id, context.organizationId, isAdministrator(context)) })
+})
+
+router.patch('/:id/archive', authenticateToken, (req: Request, res: Response) => {
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
+  const id = parseInt(req.params.id, 10)
+  if (Number.isNaN(id)) {
+    res.status(400).json({ error: 'Invalid notification ID' })
+    return
+  }
+
+  const archived = dismissInAppNotification(id, context.id, context.organizationId, isAdministrator(context))
+  if (!archived) {
+    res.status(404).json({ error: 'Notification not found' })
+    return
+  }
+
+  res.json(archived)
+})
+
+router.get('/recipients', authenticateToken, (req: Request, res: Response) => {
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
+  const db = getDb()
+  const organizationId = context.organizationId ?? (req.user?.activeOrganizationId ?? req.user?.organizationId ?? null)
+
+  const rows = context.role === 'super_admin'
+    ? db
+        .prepare(`
+          SELECT u.id, u.name, u.email, uo.role, uo.organization_id
+          FROM users u
+          JOIN user_organizations uo ON uo.user_id = u.id
+          ORDER BY u.name COLLATE NOCASE, u.email
+        `)
+        .all() as Array<{ id: number; name: string; email: string; role: string; organization_id: number | null }>
+    : organizationId
+      ? db
+          .prepare(`
+            SELECT u.id, u.name, u.email, uo.role, uo.organization_id
+            FROM users u
+            JOIN user_organizations uo ON uo.user_id = u.id
+            WHERE uo.organization_id = ?
+            ORDER BY u.name COLLATE NOCASE, u.email
+          `)
+          .all(organizationId) as Array<{ id: number; name: string; email: string; role: string; organization_id: number | null }>
+      : []
+
+  res.json(rows
+    .filter(row => row.id !== context.id)
+    .map(row => ({
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      role: row.role,
+      organizationId: row.organization_id,
+    })))
+})
+
+router.post('/send', authenticateToken, (req: Request, res: Response) => {
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
+  if (context.role === 'user') {
+    res.status(403).json({ error: 'Administrator access required' })
+    return
+  }
+
+  const { recipientId, subject, body } = req.body as {
+    recipientId?: unknown
+    subject?: unknown
+    body?: unknown
+  }
+
+  const recipientUserId = typeof recipientId === 'number' && Number.isInteger(recipientId) ? recipientId : null
+  const normalizedSubject = typeof subject === 'string' ? subject.trim() : ''
+  const normalizedBody = typeof body === 'string' ? body.trim() : ''
+
+  if (!recipientUserId || !normalizedSubject || !normalizedBody) {
+    res.status(400).json({ error: 'recipientId, subject, and body are required' })
+    return
+  }
+
+  const db = getDb()
+  const recipient = db
+    .prepare(`
+      SELECT u.id, uo.organization_id, uo.role
+      FROM users u
+      JOIN user_organizations uo ON uo.user_id = u.id
+      WHERE u.id = ?
+      LIMIT 1
+    `)
+    .get(recipientUserId) as { id: number; organization_id: number | null; role: string } | undefined
+
+  if (!recipient) {
+    res.status(404).json({ error: 'Recipient not found' })
+    return
+  }
+
+  const sameOrganization = context.role === 'super_admin'
+    ? true
+    : context.organizationId !== null && recipient.organization_id === context.organizationId
+
+  if (!sameOrganization) {
+    res.status(403).json({ error: 'You can only send notifications to users in your organization' })
+    return
+  }
+
+  try {
+    createNotificationEventWithDeliveries(
+      {
+        organizationId: recipient.organization_id,
+        type: 'system',
+        title: normalizedSubject,
+        message: normalizedBody,
+        targetType: 'user',
+        targetId: recipient.id,
+        priority: 'normal',
+      },
+      [{ userId: recipient.id, channel: 'in_app', role: 'primary' }],
+      db,
+    )
+
+    res.json({ ok: true, recipientId: recipient.id, subject: normalizedSubject })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Unable to send notification' })
+  }
 })
 
 /**

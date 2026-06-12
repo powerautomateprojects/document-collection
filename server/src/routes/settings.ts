@@ -17,6 +17,7 @@ const ALLOWED_KEYS = new Set([
   'image_logo_padding_left',
   'copy_answers_disclaimer',
   'ai_summary_enabled',
+  'about_message',
 ])
 
 interface DbSetting {
@@ -37,7 +38,7 @@ interface DbSetting {
  *         required: true
  *         schema:
  *           type: string
- *           enum: [login_message, login_subtitle, notification_reminder_days, notification_late_days, qr_code_enabled, image_logo_padding_top, image_logo_padding_right, image_logo_padding_bottom, image_logo_padding_left]
+ *           enum: [login_message, login_subtitle, notification_reminder_days, notification_late_days, qr_code_enabled, image_logo_padding_top, image_logo_padding_right, image_logo_padding_bottom, image_logo_padding_left, about_message]
  *         description: The setting key to retrieve
  *     responses:
  *       200:
@@ -87,7 +88,7 @@ router.get('/:key', (req: Request, res: Response) => {
  *         required: true
  *         schema:
  *           type: string
- *           enum: [login_message, login_subtitle, notification_reminder_days, notification_late_days, qr_code_enabled, image_logo_padding_top, image_logo_padding_right, image_logo_padding_bottom, image_logo_padding_left]
+ *           enum: [login_message, login_subtitle, notification_reminder_days, notification_late_days, qr_code_enabled, image_logo_padding_top, image_logo_padding_right, image_logo_padding_bottom, image_logo_padding_left, about_message]
  *     requestBody:
  *       required: true
  *       content:

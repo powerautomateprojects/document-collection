@@ -630,6 +630,51 @@ export function markInAppNotificationRead(
     .find((item) => item.id === deliveryId) ?? null
 }
 
+export function dismissInAppNotification(
+  deliveryId: number,
+  userId: number,
+  organizationId: number | null,
+  isAdminUser: boolean,
+  dbArg?: AppDatabase,
+): NotificationListItem | null {
+  const db = dbArg ?? getDb()
+  const params: Array<number> = [deliveryId, userId]
+  const scopeClause = !isAdminUser && organizationId
+    ? 'AND (e.organization_id = ? OR e.organization_id IS NULL)'
+    : !isAdminUser
+      ? 'AND e.organization_id IS NULL'
+      : ''
+
+  if (scopeClause.includes('?')) {
+    params.push(organizationId!)
+  }
+
+  const existing = db
+    .prepare(
+      `SELECT d.id AS delivery_id
+       FROM notification_deliveries d
+       JOIN notification_events e ON e.id = d.event_id
+       WHERE d.id = ?
+         AND d.channel = 'in_app'
+         AND d.recipient_user_id = ?
+         ${scopeClause}`
+    )
+    .get(...params) as unknown as { delivery_id: number } | undefined
+
+  if (!existing) {
+    return null
+  }
+
+  db.prepare(
+    `UPDATE notification_deliveries
+     SET status = 'dismissed', read_at = COALESCE(read_at, datetime('now'))
+     WHERE id = ? AND recipient_user_id = ?`
+  ).run(deliveryId, userId)
+
+  return listInAppNotificationsForUser(userId, organizationId, isAdminUser, 1000, db)
+    .find((item) => item.id === deliveryId) ?? null
+}
+
 export function markAllInAppNotificationsRead(
   userId: number,
   organizationId: number | null,

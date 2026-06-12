@@ -14,6 +14,7 @@ import ReportsPage from './pages/ReportsPage'
 import AISummaryPage from './pages/AISummaryPage'
 import TicketDesignerPage from './pages/TicketDesignerPage'
 import NotificationsPage from './pages/NotificationsPage'
+import AboutPage from './pages/AboutPage'
 import MySubmissionsPage from './pages/MySubmissionsPage'
 import MySubmissionDetailPage from './pages/MySubmissionDetailPage'
 import ApprovalsPage from './pages/ApprovalsPage'
@@ -53,6 +54,7 @@ export default function App() {
         <Route element={<HomePage />}>
           <Route index element={<Navigate to={defaultAuthenticatedRoute} replace />} />
           <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/about" element={<AboutPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/my-submissions" element={<MySubmissionsPage />} />
           <Route path="/my-submissions/:responseId" element={<MySubmissionDetailPage />} />

@@ -687,4 +687,8 @@ export function seedData(db: AppDatabase): void {
   db.prepare(
     `INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)`
   ).run('ai_summary_enabled', 'true')
+
+  db.prepare(
+    `INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)`
+  ).run('about_message', 'Welcome to Data Collection Pro. This workspace helps teams manage submissions, approvals, and communication in one place.')
 }

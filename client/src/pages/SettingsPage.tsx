@@ -40,6 +40,7 @@ import { listUsers, createUser, deleteUser, updateUser, sendInvite, type AppUser
 import { getUserLocations, updateUserLocations, listLocations, createLocation, deleteLocation, updateLocation } from '../api/locations'
 import { listGroups, createGroup, updateGroup, deleteGroup, listGroupMembers, addGroupMember, removeGroupMember } from '../api/groups'
 import { LocationTypeahead } from '../components/common/LocationTypeahead'
+import RichTextEditor from '../components/common/RichTextEditor'
 import { useAuth } from '../contexts/AuthContext'
 import type { Category, Collection, GalleryAsset, Group, GroupMember, Location, MembershipRole, Organization } from '../types'
 import { getCategoryColorClasses } from '../utils/categoryColors'
@@ -438,6 +439,11 @@ export default function SettingsPage() {
   const [loginMessageSaving, setLoginMessageSaving] = useState(false)
   const [loginMessageError, setLoginMessageError] = useState<string | null>(null)
   const [loginMessageSaved, setLoginMessageSaved] = useState(false)
+  const [aboutMessage, setAboutMessage] = useState('')
+  const [aboutMessageDraft, setAboutMessageDraft] = useState('')
+  const [aboutMessageSaving, setAboutMessageSaving] = useState(false)
+  const [aboutMessageError, setAboutMessageError] = useState<string | null>(null)
+  const [aboutMessageSaved, setAboutMessageSaved] = useState(false)
   const [reminderDays, setReminderDays] = useState('-3')
   const [reminderDaysDraft, setReminderDaysDraft] = useState('-3')
   const [lateDays, setLateDays] = useState('1')
@@ -480,6 +486,9 @@ export default function SettingsPage() {
       .catch(() => {})
     getPublicSetting('login_message')
       .then(val => { setLoginMessage(val); setLoginMessageDraft(val) })
+      .catch(() => {})
+    getPublicSetting('about_message')
+      .then(val => { setAboutMessage(val); setAboutMessageDraft(val) })
       .catch(() => {})
     getPublicSetting('notification_reminder_days')
       .then(val => {
@@ -1935,12 +1944,23 @@ export default function SettingsPage() {
               <label className="block text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">
                 Welcome Message
               </label>
-              <textarea
-                rows={3}
+              <RichTextEditor
                 value={loginMessageDraft}
-                onChange={e => { setLoginMessageDraft(e.target.value); setLoginMessageSaved(false) }}
-                className={INPUT + ' resize-none'}
+                onChange={html => { setLoginMessageDraft(html); setLoginMessageSaved(false) }}
                 placeholder="Enter the message shown on the login page…"
+                minHeightClassName="min-h-[90px]"
+              />
+            </div>
+
+            <div className="border-t border-[#E2E8F0] dark:border-[#334155] pt-5">
+              <label className="block text-xs font-semibold text-[#475569] dark:text-[#94A3B8] uppercase tracking-wide mb-2">
+                About Message
+              </label>
+              <RichTextEditor
+                value={aboutMessageDraft}
+                onChange={html => { setAboutMessageDraft(html); setAboutMessageSaved(false) }}
+                placeholder="Enter the About page content…"
+                minHeightClassName="min-h-[220px]"
               />
             </div>
 
@@ -1976,6 +1996,38 @@ export default function SettingsPage() {
                 <span className="text-sm text-green-600 dark:text-green-400">Saved!</span>
               )}
             </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                disabled={aboutMessageSaving || aboutMessageDraft.trim() === aboutMessage}
+                onClick={async () => {
+                  const val = aboutMessageDraft.trim()
+                  setAboutMessageSaving(true)
+                  setAboutMessageError(null)
+                  try {
+                    await updateSetting('about_message', val)
+                    setAboutMessage(val)
+                    setAboutMessageSaved(true)
+                  } catch (err) {
+                    setAboutMessageError((err as Error).message)
+                  } finally {
+                    setAboutMessageSaving(false)
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+              >
+                <MessageSquare size={14} />
+                {aboutMessageSaving ? 'Saving…' : 'Save About Message'}
+              </button>
+              {aboutMessageSaved && (
+                <span className="text-sm text-green-600 dark:text-green-400">Saved!</span>
+              )}
+            </div>
+
+            {aboutMessageError && (
+              <p className="text-sm text-red-500">{aboutMessageError}</p>
+            )}
 
           </div>
         )}
