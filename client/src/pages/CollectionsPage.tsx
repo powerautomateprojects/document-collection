@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, rectSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -295,8 +295,15 @@ export default function CollectionsPage() {
   const [deleting, setDeleting] = useState<number | null>(null)
   const [activeCategoryTab, setActiveCategoryTab] = useState<string | null>(null)
   const [templateLibraryOpen, setTemplateLibraryOpen] = useState(false)
+  const [searchParams] = useSearchParams()
   const latestOrderRef = useRef<string>('[]')
   const canManageCollections = user?.role === 'super_admin' || user?.role === 'administrator' || user?.role === 'team_manager'
+
+  useEffect(() => {
+    if (searchParams.get('openTemplateLibrary') === '1') {
+      setTemplateLibraryOpen(true)
+    }
+  }, [searchParams])
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: {
       distance: 8,

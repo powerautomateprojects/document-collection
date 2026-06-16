@@ -749,14 +749,19 @@ export default function TicketDesignerPage() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-4">
                     <div>
                       <label className={LABEL}>Title</label>
                       <input value={title} onChange={event => setTitle(event.target.value)} className={INPUT} />
                     </div>
                     <div>
                       <label className={LABEL}>Description</label>
-                      <input value={description} onChange={event => setDescription(event.target.value)} className={INPUT} />
+                      <textarea
+                        value={description}
+                        onChange={event => setDescription(event.target.value)}
+                        rows={3}
+                        className={`${INPUT} min-h-[72px] resize-y`}
+                      />
                     </div>
                   </div>
                 </div>

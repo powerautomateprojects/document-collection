@@ -4,6 +4,7 @@ import type { UserRole } from './types'
 import LoginPage from './pages/LoginPage'
 import HomePage from './pages/HomePage'
 import CollectionsPage from './pages/CollectionsPage'
+import CollectionTypePage from './pages/CollectionTypePage'
 import CollectionBuilderPage from './pages/CollectionBuilderPage'
 import CollectionBranchingPage from './pages/CollectionBranchingPage'
 import CollectionFillPage from './pages/CollectionFillPage'
@@ -69,7 +70,8 @@ export default function App() {
 
           {/* Management routes */}
           <Route element={<RequireRole allowed={['super_admin', 'administrator', 'team_manager']} fallback="/dashboard" />}>
-            <Route path="/collections/new" element={<CollectionBuilderPage />} />
+            <Route path="/collections/new" element={<CollectionTypePage />} />
+            <Route path="/collections/new/builder" element={<CollectionBuilderPage />} />
             <Route path="/collections/:id/edit" element={<CollectionBuilderPage />} />
             <Route path="/collections/:id/branching" element={<CollectionBranchingPage />} />
             <Route path="/settings" element={<SettingsPage />} />

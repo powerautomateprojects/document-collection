@@ -232,6 +232,7 @@ export default function CollectionBuilderPage() {
   const formId = useId()
   const isEdit = !!id
   const templateId = !isEdit ? searchParams.get('templateId') : null
+  const collectionType = searchParams.get('type') === 'template' ? 'template' : 'standard'
   const { showToast } = useToast()
 
   // Metadata
@@ -1153,7 +1154,13 @@ export default function CollectionBuilderPage() {
               <ArrowLeft size={18} />
             </button>
             <h1 className="text-lg font-semibold text-[#1E293B] dark:text-[#F1F5F9]">
-              {isEdit ? 'Edit Collection' : templateId ? 'New Collection From Template' : 'New Collection'}
+              {isEdit
+                ? 'Edit Collection'
+                : templateId
+                  ? 'New Collection From Template'
+                  : collectionType === 'template'
+                    ? 'New Template-Based Collection'
+                    : 'New Collection'}
             </h1>
             <span
               className={[
