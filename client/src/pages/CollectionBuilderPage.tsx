@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -31,6 +32,7 @@ import {
 } from '../api/collections'
 import { listGalleryAssets } from '../api/galleryAssets'
 import { listGroups } from '../api/groups'
+import { getPublicSetting } from '../api/settings'
 import { getCollectionTicketTemplatesAll, saveCollectionTicketTemplates, setCollectionTicketTemplateActive } from '../api/tickets'
 import { listTicketTemplates } from '../api/ticketTemplates'
 import { listCategories } from '../api/categories'
@@ -293,6 +295,7 @@ export default function CollectionBuilderPage() {
   const [galleryAssets, setGalleryAssets] = useState<GalleryAsset[]>([])
   const [galleryLoading, setGalleryLoading] = useState(false)
   const [galleryError, setGalleryError] = useState<string | null>(null)
+  const [logoPadding, setLogoPadding] = useState({ top: 0, right: 0, bottom: 0, left: 0 })
 
   // Ticket fields
   const [ticketFields, setTicketFields] = useState<BuilderField[]>([])
@@ -327,6 +330,13 @@ export default function CollectionBuilderPage() {
     () => galleryAssets.find(asset => asset.id === coverPhotoAssetId) ?? null,
     [galleryAssets, coverPhotoAssetId],
   )
+
+  const logoPaddingStyle = useMemo<CSSProperties>(() => ({
+    paddingTop: `${logoPadding.top}px`,
+    paddingRight: `${logoPadding.right}px`,
+    paddingBottom: `${logoPadding.bottom}px`,
+    paddingLeft: `${logoPadding.left}px`,
+  }), [logoPadding.bottom, logoPadding.left, logoPadding.right, logoPadding.top])
 
   function applyCollectionToForm(col: Collection, options?: { asTemplate?: boolean }) {
     const asTemplate = options?.asTemplate === true
@@ -377,6 +387,22 @@ export default function CollectionBuilderPage() {
       })
       .catch(err => setLoadError((err as Error).message))
   }, [id, isEdit])
+
+  useEffect(() => {
+    Promise.all([
+      getPublicSetting('image_logo_padding_top').catch(() => '0'),
+      getPublicSetting('image_logo_padding_right').catch(() => '0'),
+      getPublicSetting('image_logo_padding_bottom').catch(() => '0'),
+      getPublicSetting('image_logo_padding_left').catch(() => '0'),
+    ]).then(([top, right, bottom, left]) => {
+      setLogoPadding({
+        top: Math.max(0, Number.parseInt(top, 10) || 0),
+        right: Math.max(0, Number.parseInt(right, 10) || 0),
+        bottom: Math.max(0, Number.parseInt(bottom, 10) || 0),
+        left: Math.max(0, Number.parseInt(left, 10) || 0),
+      })
+    })
+  }, [])
 
   useEffect(() => {
     if (detailsTab !== 'photo') return
@@ -1775,6 +1801,18 @@ export default function CollectionBuilderPage() {
                       ;(e.currentTarget as HTMLImageElement).style.display = 'none'
                     }}
                   />
+                  {logoUrl && (
+                    <div style={logoPaddingStyle} className="absolute left-3 top-3 z-10 inline-flex max-w-[96px] bg-white/95 shadow-sm border border-white/80">
+                      <img
+                        src={logoUrl}
+                        alt="Logo preview"
+                        className="w-full h-auto"
+                        onError={e => {
+                          ;(e.currentTarget as HTMLImageElement).style.display = 'none'
+                        }}
+                      />
+                    </div>
+                  )}
                   <div className="absolute inset-0 bg-black/30 flex items-end p-4">
                     <span className="text-white text-lg font-bold drop-shadow">
                       {title || 'Untitled Collection'}
