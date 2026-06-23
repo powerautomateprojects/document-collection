@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { CalendarCheck } from 'lucide-react'
+import { CalendarCheck, X } from 'lucide-react'
 import { getPublicSignupSheet, listPublicSlots, registerForSlot } from '../api/signupSlots'
 import type { SignupSheetSummary, SignupSlot } from '../types'
 
