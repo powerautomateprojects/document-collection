@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { CalendarCheck, X } from 'lucide-react'
+import { CalendarCheck } from 'lucide-react'
 import { getPublicSignupSheet, listPublicSlots, registerForSlot } from '../api/signupSlots'
 import type { SignupSheetSummary, SignupSlot } from '../types'
 
@@ -54,7 +54,7 @@ function RegisterModal({ slot, slug, onClose, onSuccess }: RegisterModalProps) {
     }
   }
 
-  const { primary: dateStr, secondary: dayStr } = formatDate(slot.slotDate)
+  const { primary: dateStr } = formatDate(slot.slotDate)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

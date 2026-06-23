@@ -207,7 +207,7 @@ export default function SignupSheetBuilderPage() {
     }
     let cid = savedCollectionId
     if (!cid) {
-      cid = await saveCollection(title, description, status)
+      cid = await saveCollection(title, description, status, category)
       if (!cid) return
     }
     try {
@@ -257,12 +257,6 @@ export default function SignupSheetBuilderPage() {
       </div>
     )
   }
-
-  const publicUrl = savedCollectionId
-    ? `${window.location.origin}/signup/${slots.length > 0 ? '' : ''}` // resolved below
-    : null
-
-  const fillSlug = savedCollectionId ? `/signup/${encodeURIComponent(title.toLowerCase().replace(/\s+/g, '-'))}` : null
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 space-y-8">
