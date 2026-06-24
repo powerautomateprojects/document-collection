@@ -3,6 +3,48 @@ import { getDb } from '../database/db'
 import { authenticateToken, optionalAuthenticateToken } from '../middleware/auth'
 import { loadRequestUserContext } from '../middleware/organizationAccess'
 
+function extractLocationNames(payload: unknown): string[] {
+  if (Array.isArray(payload)) {
+    return payload
+      .map(item => {
+        if (typeof item === 'string') return item
+        if (item && typeof item === 'object') {
+          const record = item as Record<string, unknown>
+          const name = record.NAME ?? record.name ?? record.Name
+          return typeof name === 'string' ? name : ''
+        }
+        return ''
+      })
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  }
+
+  if (payload && typeof payload === 'object') {
+    const record = payload as Record<string, unknown>
+    const features = record.features
+    if (Array.isArray(features)) {
+      return features
+        .map(feature => {
+          if (feature && typeof feature === 'object') {
+            const featureRecord = feature as Record<string, unknown>
+            const properties = featureRecord.properties
+            if (properties && typeof properties === 'object') {
+              const propertyRecord = properties as Record<string, unknown>
+              const name = propertyRecord.NAME ?? propertyRecord.name ?? propertyRecord.Name
+              return typeof name === 'string' ? name : ''
+            }
+          }
+          return ''
+        })
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    }
+
+    const name = record.NAME ?? record.name ?? record.Name
+    if (typeof name === 'string' && name.trim()) return [name.trim()]
+  }
+
+  return []
+}
+
 const router = Router()
 
 interface DbLocation {
@@ -140,6 +182,89 @@ router.post('/', authenticateToken, (req: Request, res: Response) => {
       res.status(500).json({ error: 'Failed to create location' })
     }
   }
+})
+
+// ── POST /api/locations/import — bulk import from configured JSON URL (admin+) ───────────────
+router.post('/import', authenticateToken, async (req: Request, res: Response) => {
+  const context = loadRequestUserContext(req)
+  if (!context) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+
+  if (context.role !== 'administrator' && context.role !== 'super_admin') {
+    res.status(403).json({ error: 'Administrator access required' })
+    return
+  }
+
+  const body = req.body as { url?: unknown }
+  const providedUrl = typeof body?.url === 'string' ? body.url.trim() : ''
+  const importUrl = providedUrl || process.env.IMPORT_JSON_URL?.trim()
+  if (!importUrl) {
+    res.status(400).json({ error: 'An import URL is required' })
+    return
+  }
+
+  let payload: unknown
+  try {
+    const response = await fetch(importUrl)
+    if (!response.ok) {
+      res.status(502).json({ error: `Failed to fetch import data (${response.status})` })
+      return
+    }
+
+    payload = await response.json()
+  } catch (err) {
+    console.error('[locations] import fetch:', err)
+    res.status(502).json({ error: 'Failed to read import data from the provided URL' })
+    return
+  }
+
+  const names = extractLocationNames(payload)
+  const normalizedNames = names
+    .map(name => name.trim())
+    .filter(name => name.length > 0)
+
+  const dedupedNames: string[] = []
+  const seen = new Set<string>()
+  for (const name of normalizedNames) {
+    const key = name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    dedupedNames.push(name)
+  }
+
+  const db = getDb()
+  const existingRows = context.organizationId === null
+    ? db.prepare('SELECT lower(name) AS name_key FROM locations WHERE organization_id IS NULL').all() as Array<{ name_key: string }>
+    : db.prepare('SELECT lower(name) AS name_key FROM locations WHERE organization_id = ?').all(context.organizationId) as Array<{ name_key: string }>
+  const existingNames = new Set(existingRows.map(row => row.name_key.toLowerCase()))
+
+  const createdNames: string[] = []
+  const skippedNames: string[] = []
+
+  for (const name of dedupedNames) {
+    if (existingNames.has(name.toLowerCase())) {
+      skippedNames.push(name)
+      continue
+    }
+
+    try {
+      db.prepare('INSERT INTO locations (name, organization_id) VALUES (?, ?)').run(name, context.organizationId)
+      existingNames.add(name.toLowerCase())
+      createdNames.push(name)
+    } catch (err) {
+      console.error('[locations] import create failed:', err)
+      skippedNames.push(name)
+    }
+  }
+
+  res.json({
+    imported: createdNames.length,
+    skipped: skippedNames.length,
+    total: dedupedNames.length,
+    names: createdNames,
+  })
 })
 
 // ── PATCH /api/locations/:id — rename (admin+) ───────────────

@@ -30,6 +30,13 @@ export async function listLocations(): Promise<Location[]> {
   return res.json() as Promise<Location[]>
 }
 
+export interface LocationImportResult {
+  imported: number
+  skipped: number
+  total: number
+  names: string[]
+}
+
 export async function createLocation(name: string): Promise<Location> {
   const res = await fetch(API_BASE, {
     method: 'POST',
@@ -42,6 +49,20 @@ export async function createLocation(name: string): Promise<Location> {
     throw new Error(data.error ?? 'Failed to create location')
   }
   return res.json() as Promise<Location>
+}
+
+export async function importLocationsFromJson(url: string): Promise<LocationImportResult> {
+  const res = await fetch(`${API_BASE}/import`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ url }),
+  })
+  handleUnauthorizedResponse(res)
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(data.error ?? 'Failed to import locations')
+  }
+  return res.json() as Promise<LocationImportResult>
 }
 
 export async function deleteLocation(id: number): Promise<void> {

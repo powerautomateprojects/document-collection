@@ -4,7 +4,7 @@ import { authenticateToken } from '../middleware/auth'
 
 const router = Router()
 
-const ALLOWED_KEYS = new Set(['collections_card_order'])
+const ALLOWED_KEYS = new Set(['collections_card_order', 'location_import_url'])
 
 interface DbPreference {
   value: string

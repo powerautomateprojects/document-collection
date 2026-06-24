@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Bell, Building2, ChevronDown, ChevronRight, Code2, Database, ExternalLink, GripVertical, Image as ImageIcon, LayoutList, Mail, MapPin, MessageSquare, Pencil, Plus, Save, Tag, Trash2, Users, UserCheck, X } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Bell, Building2, ChevronDown, ChevronRight, Code2, Database, ExternalLink, GripVertical, Image as ImageIcon, LayoutList, Mail, MapPin, MessageSquare, Pencil, Plus, Save, Tag, Trash2, Upload, Users, UserCheck, X } from 'lucide-react'
 import {
   DndContext,
   type DragEndEvent,
@@ -37,7 +37,7 @@ import { listCollections, seedCollectionData } from '../api/collections'
 import { deleteGalleryAsset, listGalleryAssets, uploadGalleryAsset } from '../api/galleryAssets'
 import { getPublicSetting, updateSetting } from '../api/settings'
 import { listUsers, createUser, deleteUser, updateUser, sendInvite, type AppUser } from '../api/users'
-import { getUserLocations, updateUserLocations, listLocations, createLocation, deleteLocation, updateLocation } from '../api/locations'
+import { getUserLocations, updateUserLocations, listLocations, createLocation, deleteLocation, updateLocation, importLocationsFromJson } from '../api/locations'
 import { listGroups, createGroup, updateGroup, deleteGroup, listGroupMembers, addGroupMember, removeGroupMember } from '../api/groups'
 import { LocationTypeahead } from '../components/common/LocationTypeahead'
 import RichTextEditor from '../components/common/RichTextEditor'
@@ -343,9 +343,15 @@ export default function SettingsPage() {
     const [organizationDeleteSaving, setOrganizationDeleteSaving] = useState(false)
   const [locationsList, setLocationsList] = useState<Location[]>([])
   const [locationsLoading, setLocationsLoading] = useState(false)
+  const [activeLocationTab, setActiveLocationTab] = useState<'add' | 'import'>('add')
   const [newLocationName, setNewLocationName] = useState('')
   const [locationCreateSaving, setLocationCreateSaving] = useState(false)
   const [locationCreateError, setLocationCreateError] = useState<string | null>(null)
+  const [locationImportUrl, setLocationImportUrl] = useState('')
+  const [locationSearch, setLocationSearch] = useState('')
+  const [locationImportSaving, setLocationImportSaving] = useState(false)
+  const [locationImportError, setLocationImportError] = useState<string | null>(null)
+  const [locationImportSummary, setLocationImportSummary] = useState<string | null>(null)
   const [locationDeleteError, setLocationDeleteError] = useState<string | null>(null)
   const [locationSaveError, setLocationSaveError] = useState<string | null>(null)
   const [locationEditSaving, setLocationEditSaving] = useState(false)
@@ -481,6 +487,16 @@ export default function SettingsPage() {
   const [draggingId, setDraggingId] = useState<PanelId | null>(null)
 
   useEffect(() => {
+    if (user?.id) {
+      void getPreference('location_import_url')
+        .then(value => {
+          if (value) setLocationImportUrl(value)
+        })
+        .catch(() => {})
+    }
+  }, [user?.id])
+
+  useEffect(() => {
     getPublicSetting('login_subtitle')
       .then(val => { setLoginSubtitle(val); setLoginSubtitleDraft(val) })
       .catch(() => {})
@@ -569,6 +585,12 @@ export default function SettingsPage() {
       })
       .catch(() => {})
   }, [])
+
+  const filteredLocations = useMemo(() => {
+    const query = locationSearch.trim().toLowerCase()
+    if (!query) return locationsList
+    return locationsList.filter(loc => loc.name.toLowerCase().includes(query))
+  }, [locationSearch, locationsList])
 
   function sortOrganizationsByDescription(items: Organization[]) {
     return items.slice().sort((a, b) => {
@@ -883,6 +905,30 @@ export default function SettingsPage() {
       setLocationCreateError((err as Error).message)
     } finally {
       setLocationCreateSaving(false)
+    }
+  }
+
+  async function handleImportLocations() {
+    const trimmedImportUrl = locationImportUrl.trim()
+    if (!trimmedImportUrl) {
+      setLocationImportError('An import URL is required.')
+      return
+    }
+
+    setLocationImportSaving(true)
+    setLocationImportError(null)
+    setLocationImportSummary(null)
+
+    try {
+      const result = await importLocationsFromJson(trimmedImportUrl)
+      await updatePreference('location_import_url', trimmedImportUrl)
+      setLocationImportUrl(trimmedImportUrl)
+      setLocationImportSummary(`Imported ${result.imported} location${result.imported === 1 ? '' : 's'}, ${result.skipped} skipped.`)
+      await loadLocations()
+    } catch (err) {
+      setLocationImportError((err as Error).message)
+    } finally {
+      setLocationImportSaving(false)
     }
   }
 
@@ -2631,35 +2677,101 @@ export default function SettingsPage() {
 
           {locationsExpanded && (
             <div className="border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-6">
-              {/* Add location form */}
-              <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-3 items-end">
-                <div>
-                  <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Name <span className="text-red-500">*</span></label>
-                  <input
-                    type="text"
-                    value={newLocationName}
-                    onChange={e => { setNewLocationName(e.target.value); setLocationCreateError(null) }}
-                    placeholder="e.g. North Campus"
-                    className={INPUT}
-                    onKeyDown={e => { if (e.key === 'Enter') void handleCreateLocation() }}
-                  />
-                </div>
+              <div className="flex flex-wrap items-center gap-4 border-b border-[#E2E8F0] dark:border-[#334155] pb-4">
                 <button
                   type="button"
-                  onClick={() => void handleCreateLocation()}
-                  disabled={locationCreateSaving || !newLocationName.trim()}
-                  className="inline-flex items-center justify-center gap-1.5 bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+                  onClick={() => { setActiveLocationTab('add'); setLocationImportError(null); setLocationImportSummary(null) }}
+                  className={`text-sm font-medium pb-1 transition-colors ${activeLocationTab === 'add' ? 'text-[#2563EB] underline underline-offset-4 decoration-2' : 'text-[#64748B] hover:text-[#2563EB]'}`}
                 >
-                  <Plus size={14} />
-                  {locationCreateSaving ? 'Adding…' : 'Add Location'}
+                  Add Location
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setActiveLocationTab('import'); setLocationCreateError(null); setLocationImportError(null) }}
+                  className={`text-sm font-medium pb-1 transition-colors ${activeLocationTab === 'import' ? 'text-[#2563EB] underline underline-offset-4 decoration-2' : 'text-[#64748B] hover:text-[#2563EB]'}`}
+                >
+                  Import Locations
                 </button>
               </div>
 
-              {locationCreateError && <p className="text-sm text-red-500">{locationCreateError}</p>}
+              {activeLocationTab === 'add' ? (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-3 items-end">
+                    <div>
+                      <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Name <span className="text-red-500">*</span></label>
+                      <input
+                        type="text"
+                        value={newLocationName}
+                        onChange={e => { setNewLocationName(e.target.value); setLocationCreateError(null) }}
+                        placeholder="e.g. North Campus"
+                        className={INPUT}
+                        onKeyDown={e => { if (e.key === 'Enter') void handleCreateLocation() }}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleCreateLocation()}
+                      disabled={locationCreateSaving || !newLocationName.trim()}
+                      className="inline-flex items-center justify-center gap-1.5 bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+                    >
+                      <Plus size={14} />
+                      {locationCreateSaving ? 'Adding…' : 'Add Location'}
+                    </button>
+                  </div>
+                  {locationCreateError && <p className="text-sm text-red-500">{locationCreateError}</p>}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-dashed border-[#CBD5E1] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0F172A] p-4 space-y-3">
+                    <div>
+                      <p className="text-sm font-medium text-[#1E293B] dark:text-[#F1F5F9]">Import locations from a JSON feed</p>
+                      <p className="mt-1 text-sm text-[#64748B] dark:text-[#94A3B8]">Paste a URL that returns a JSON array or an object with a features array. Only the NAME values are imported, and existing names are skipped.</p>
+                    </div>
+                    <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8]">Import URL</label>
+                    <textarea
+                      value={locationImportUrl}
+                      onChange={e => { setLocationImportUrl(e.target.value); if (locationImportError) setLocationImportError(null) }}
+                      onBlur={() => {
+                        const trimmedValue = locationImportUrl.trim()
+                        if (!trimmedValue) return
+                        void updatePreference('location_import_url', trimmedValue).catch(() => {})
+                      }}
+                      placeholder="https://example.com/locations.json"
+                      rows={5}
+                      className={INPUT + ' min-h-[110px] resize-y font-mono text-xs'}
+                    />
+                    <p className="text-xs text-[#64748B] dark:text-[#94A3B8]">The URL is saved for future reference so you do not need to re-enter it each time.</p>
+                    <button
+                      type="button"
+                      onClick={() => void handleImportLocations()}
+                      disabled={locationImportSaving || !locationImportUrl.trim()}
+                      className="inline-flex items-center justify-center gap-1.5 bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+                    >
+                      <Upload size={14} />
+                      {locationImportSaving ? 'Importing…' : 'Import Locations'}
+                    </button>
+                  </div>
+                  {locationImportError && <p className="text-sm text-red-500">{locationImportError}</p>}
+                  {locationImportSummary && <p className="text-sm text-emerald-600 dark:text-emerald-400">{locationImportSummary}</p>}
+                </div>
+              )}
+
               {locationSaveError && <p className="text-sm text-red-500">{locationSaveError}</p>}
               {locationDeleteError && <p className="text-sm text-red-500">{locationDeleteError}</p>}
 
-              <div className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] overflow-hidden">
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-[#475569] dark:text-[#94A3B8] mb-1">Search locations</label>
+                  <input
+                    type="text"
+                    value={locationSearch}
+                    onChange={e => setLocationSearch(e.target.value)}
+                    placeholder="Type a location name"
+                    className={INPUT}
+                  />
+                </div>
+
+                <div className="rounded-lg border border-[#E2E8F0] dark:border-[#334155] overflow-hidden">
                 <table className="hidden md:table w-full text-sm">
                   <thead>
                     <tr className="bg-[#F8FAFC] dark:bg-[#0F172A] text-left">
@@ -2669,7 +2781,7 @@ export default function SettingsPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E2E8F0] dark:divide-[#334155]">
-                    {locationsList.map(loc => {
+                    {filteredLocations.map(loc => {
                       const isEditing = editingLocationId === loc.id
                       return (
                         <tr key={loc.id}>
@@ -2736,7 +2848,7 @@ export default function SettingsPage() {
                         </tr>
                       )
                     })}
-                    {locationsList.length === 0 && !locationsLoading && (
+                    {filteredLocations.length === 0 && !locationsLoading && (
                       <tr>
                         <td colSpan={3} className="px-4 py-6 text-center text-sm text-[#94A3B8] italic">No locations yet. Add one above.</td>
                       </tr>
@@ -2751,7 +2863,7 @@ export default function SettingsPage() {
 
                 {/* Mobile list */}
                 <div className="md:hidden divide-y divide-[#E2E8F0] dark:divide-[#334155]">
-                  {locationsList.map(loc => {
+                  {filteredLocations.map(loc => {
                     const isEditing = editingLocationId === loc.id
                     return (
                       <div key={loc.id} className="p-4 space-y-3">
@@ -2815,8 +2927,10 @@ export default function SettingsPage() {
                       </div>
                     )
                   })}
-                  {locationsList.length === 0 && !locationsLoading && (
-                    <p className="p-4 text-sm text-[#94A3B8] italic text-center">No locations yet. Add one above.</p>
+                  {filteredLocations.length === 0 && !locationsLoading && (
+                    <p className="p-4 text-sm text-[#94A3B8] italic text-center">
+                      {locationSearch.trim() ? 'No locations match your search.' : 'No locations yet. Add one above.'}
+                    </p>
                   )}
                   {locationsLoading && (
                     <p className="p-4 text-sm text-[#94A3B8] italic text-center">Loading…</p>
@@ -2824,6 +2938,7 @@ export default function SettingsPage() {
                 </div>
               </div>
             </div>
+          </div>
           )}
         </section>
       )
