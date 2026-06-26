@@ -115,6 +115,7 @@ export default function LoginPage() {
     fetch('/api/auth/organizations')
       .then(r => r.json() as Promise<LoginOrg[]>)
       .then(orgs => {
+        if (!Array.isArray(orgs)) return
         setOrganizations(orgs)
         if (orgs.length > 0) {
           const firstOrgId = String(orgs[0].id)

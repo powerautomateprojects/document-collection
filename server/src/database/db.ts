@@ -1,15 +1,20 @@
-import Database from 'libsql'
+﻿import Database from 'libsql'
+import { execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+
 import { createSchema, seedData } from './schema'
 import type { AppDatabase } from './types'
 
 let db: AppDatabase | null = null
 let dbConnectedMode: 'turso' | 'sqlite' | null = null
 let dbLastVerifiedAt = 0
+let dbTursoLastFailedAt = 0
 
 // Turso Hrana streams expire after ~5 min of idle; reconnect proactively.
 const TURSO_VERIFY_INTERVAL_MS = 3 * 60 * 1000 // 3 minutes
+// When Turso fails at startup and we fall back to SQLite, retry Turso after this interval.
+const TURSO_RETRY_AFTER_FALLBACK_MS = 30 * 1000 // 30 seconds
 
 function isStreamExpiredError(err: unknown): boolean {
   const message = (err as { message?: string })?.message ?? ''
@@ -22,7 +27,7 @@ function isStreamExpiredError(err: unknown): boolean {
  */
 export function resetDbIfStreamError(err: unknown): void {
   if (isStreamExpiredError(err)) {
-    console.warn('[db] Turso stream expired – resetting connection for next request')
+    console.warn('[db] Turso stream expired â€“ resetting connection for next request')
     try { db?.close() } catch { /* ignore */ }
     db = null
     dbConnectedMode = null
@@ -35,17 +40,53 @@ type DbTarget =
   | { mode: 'sqlite'; dbPath: string }
 
 function hasForeignKeyTarget(database: AppDatabase, tableName: string, targetTable: string): boolean {
-  const foreignKeys = database
-    .prepare(`PRAGMA foreign_key_list(${tableName})`)
-    .all() as unknown as Array<{ table: string }>
+  // Use sqlite_master instead of PRAGMA foreign_key_list so reads are served
+  // locally from the embedded replica (PRAGMA queries are routed to Turso remotely).
+  try {
+    const row = database.prepare(
+      `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`
+    ).get(tableName) as { sql?: string } | undefined
+    if (!row?.sql) return false
+    // Check if the CREATE TABLE statement references the target table as a FK
+    const sqlUpper = row.sql.toUpperCase()
+    const targetUpper = targetTable.toUpperCase()
+    return sqlUpper.includes(`REFERENCES ${targetUpper}`) || sqlUpper.includes(`REFERENCES "${targetUpper}"`)
+  } catch {
+    return false
+  }
+}
 
-  return foreignKeys.some((foreignKey) => foreignKey.table === targetTable)
+/**
+ * Returns column info for a table by parsing sqlite_master.
+ * Used instead of PRAGMA table_info() which is routed to Turso remotely in
+ * embedded replica mode, causing 502 errors on free-tier cold starts.
+ */
+function getTableColumns(database: AppDatabase, tableName: string): Array<{ name: string }> {
+  try {
+    const row = database.prepare(
+      `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`
+    ).get(tableName) as { sql?: string } | undefined
+    if (!row?.sql) return []
+    // Extract the column block from CREATE TABLE (...) and parse column names
+    const inner = row.sql.replace(/^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`]?\w+["`]?\s*\(/i, '').replace(/\)\s*;?\s*$/, '')
+    const lines = inner.split(',').map(l => l.trim()).filter(Boolean)
+    const cols: Array<{ name: string }> = []
+    for (const line of lines) {
+      const keyword = line.toUpperCase()
+      if (keyword.startsWith('PRIMARY ') || keyword.startsWith('UNIQUE ') ||
+          keyword.startsWith('CHECK ') || keyword.startsWith('FOREIGN ') ||
+          keyword.startsWith('CONSTRAINT ')) continue
+      const nameMatch = line.match(/^["`]?(\w+)["`]?/)
+      if (nameMatch) cols.push({ name: nameMatch[1] })
+    }
+    return cols
+  } catch {
+    return []
+  }
 }
 
 function rebuildCollectionResponseValues(database: AppDatabase): void {
-  const existingResponseValueCols = database
-    .prepare(`PRAGMA table_info(collection_response_values_old)`)
-    .all() as Array<{ name: string }>
+  const existingResponseValueCols = getTableColumns(database, 'collection_response_values_old')
   const oldResponseValueColNames = new Set(existingResponseValueCols.map(column => column.name))
   const staffUpdatedByNameExpr = oldResponseValueColNames.has('staff_updated_by_name')
     ? 'staff_updated_by_name'
@@ -120,9 +161,7 @@ function rebuildCollectionTableColumns(database: AppDatabase, preserveListOption
 }
 
 function rebuildTicketFields(database: AppDatabase): void {
-  const existingCols = database
-    .prepare(`PRAGMA table_info(ticket_fields)`)
-    .all() as Array<{ name: string }>
+  const existingCols = getTableColumns(database, 'ticket_fields')
   const ticketFieldCols = new Set(existingCols.map(column => column.name))
   const ticketTemplateIdExpr = ticketFieldCols.has('ticket_template_id') ? 'ticket_template_id' : 'NULL'
   const subtitleExpr = ticketFieldCols.has('subtitle') ? 'subtitle' : 'NULL'
@@ -230,9 +269,7 @@ function rebuildTicketTableColumns(database: AppDatabase, preserveListOptions: b
 }
 
 function rebuildTicketResponses(database: AppDatabase): void {
-  const existingCols = database
-    .prepare(`PRAGMA table_info(ticket_responses)`)
-    .all() as Array<{ name: string }>
+  const existingCols = getTableColumns(database, 'ticket_responses')
   const ticketResponseCols = new Set(existingCols.map(column => column.name))
   const ticketTemplateIdExpr = ticketResponseCols.has('ticket_template_id') ? 'ticket_template_id' : 'NULL'
 
@@ -531,16 +568,34 @@ function applyPragmas(database: AppDatabase): void {
   }
 }
 
+/**
+ * Turso free-tier databases go to sleep and return 502 when waking up.
+ * The synchronous native `libsql` binary doesn't wait, so we wake the
+ * database first using `@libsql/client` (which retries internally).
+ */
+function wakeUpTurso(url: string, authToken: string): void {
+  try {
+    const wakeScript = path.join(__dirname, 'wake-turso.mjs')
+    execSync(`node "${wakeScript}" "${url}" "${authToken}"`, {
+      timeout: 15000,
+      stdio: 'ignore',
+    })
+    console.log('[db] Turso wake-up ping succeeded')
+  } catch {
+    // ignore â€” native libsql will report the real error
+  }
+}
+
 export function getDb(): AppDatabase {
-  // ── Turso health check: re-verify the stream every TURSO_VERIFY_INTERVAL_MS ──
+  // â”€â”€ Turso health check: re-verify the stream every TURSO_VERIFY_INTERVAL_MS â”€â”€
   if (db && dbConnectedMode === 'turso') {
     const now = Date.now()
     if (now - dbLastVerifiedAt > TURSO_VERIFY_INTERVAL_MS) {
       try {
-        db.prepare('SELECT 1').get()
+        db.sync()
         dbLastVerifiedAt = now
       } catch (err) {
-        console.warn('[db] Turso stream expired during health check, reconnecting:', (err as Error).message)
+        console.warn('[db] Turso sync failed during health check, reconnecting:', (err as Error).message)
         try { db.close() } catch { /* ignore */ }
         db = null
         dbConnectedMode = null
@@ -549,20 +604,54 @@ export function getDb(): AppDatabase {
     }
   }
 
-  if (!db) {
-    const target = resolveDbTarget()
+  // â”€â”€ If we previously fell back to SQLite, retry Turso periodically â”€â”€
+  const target = resolveDbTarget()
+  if (db && dbConnectedMode === 'sqlite' && target.mode === 'turso') {
+    const now = Date.now()
+    if (now - dbTursoLastFailedAt > TURSO_RETRY_AFTER_FALLBACK_MS) {
+      const urlsToTry = [target.url]
+      if (target.url.startsWith('libsql://')) {
+        urlsToTry.push(target.url.replace(/^libsql:\/\//, 'https://'))
+      }
+      for (const url of urlsToTry) {
+        try {
+          const replicaPath = path.resolve(process.cwd(), 'turso-replica.db')
+          const candidate = new Database(replicaPath, { syncUrl: url, authToken: target.authToken } as Database.Options)
+          candidate.sync()
+          console.log(`[db] Reconnected to Turso via embedded replica`)
+          try { db.close() } catch { /* ignore */ }
+          db = candidate
+          dbConnectedMode = 'turso'
+          dbLastVerifiedAt = now
+          dbTursoLastFailedAt = 0
+          return db
+        } catch {
+          try { /* candidate?.close() */ } catch { /* ignore */ }
+        }
+      }
+      dbTursoLastFailedAt = now
+    }
+  }
 
+  if (!db) {
     if (target.mode === 'turso') {
+      // Use embedded replica: libsql syncs from Turso into a local file.
+      // This avoids the hrana protocol 502 issues with the native binary.
+      const replicaPath = path.resolve(process.cwd(), 'turso-replica.db')
       try {
-        console.log(`[db] Using Turso database: ${target.url}`)
-        db = new Database(target.url, { authToken: target.authToken } as Database.Options)
-        db.prepare('SELECT 1').get()
+        console.log(`[db] Connecting to Turso via embedded replica: ${target.url}`)
+        db = new Database(replicaPath, { syncUrl: target.url, authToken: target.authToken } as Database.Options)
+        db.sync()
         dbConnectedMode = 'turso'
         dbLastVerifiedAt = Date.now()
+        dbTursoLastFailedAt = 0
+        console.log('[db] Turso embedded replica ready')
         return db
       } catch (err) {
-        console.warn('[db] Turso connection failed, falling back to local SQLite:', (err as Error).message)
+        console.warn('[db] Turso embedded replica failed, falling back to local SQLite:', (err as Error).message)
+        try { db?.close() } catch { /* ignore */ }
         db = null
+        dbTursoLastFailedAt = Date.now()
       }
     }
 
@@ -604,28 +693,46 @@ export function setupDatabase(): void {
     seedData(database)
   }
 
-  try {
-    initialize(getDb())
-    console.log('[db] Database ready')
-  } catch (err) {
-    if (!isMalformedDbError(err)) {
+  const isTursoError = (err: unknown) =>
+    String((err as { message?: string })?.message ?? '').includes('502')
+    || String((err as { message?: string })?.message ?? '').includes('Hrana')
+
+  let lastErr: unknown
+  const maxAttempts = 3
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const database = getDb()
+      // Re-sync embedded replica before each attempt to wake Turso
+      if (dbConnectedMode === 'turso') {
+        try { database.sync() } catch { /* ignore â€” sync failure handled below */ }
+      }
+      initialize(database)
+      console.log('[db] Database ready')
+      return
+    } catch (err) {
+      lastErr = err
+      if (isMalformedDbError(err)) {
+        const target = resolveDbTarget()
+        if (target.mode !== 'sqlite') throw err
+        console.warn('[db] Malformed local SQLite database detected during setup, rebuilding from scratch...')
+        resetDatabase(target.dbPath)
+        initialize(getDb())
+        console.log('[db] Database ready after recovery')
+        return
+      }
+      if (isTursoError(err) && attempt < maxAttempts) {
+        console.warn(`[db] Turso error during setup (attempt ${attempt}/${maxAttempts}), retrying after sync...`)
+        try { db?.sync() } catch { /* ignore */ }
+        continue
+      }
       throw err
     }
-
-    const target = resolveDbTarget()
-    if (target.mode !== 'sqlite') {
-      throw err
-    }
-
-    console.warn('[db] Malformed local SQLite database detected during setup, rebuilding from scratch...')
-    resetDatabase(target.dbPath)
-    initialize(getDb())
-    console.log('[db] Database ready after recovery')
   }
+  throw lastErr
 }
 
 function runMigrations(db: AppDatabase): void {
-  // ── Migration tracking table ─────────────────────────────────────────────
+  // â”€â”€ Migration tracking table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id         TEXT PRIMARY KEY,
@@ -663,9 +770,7 @@ function runMigrations(db: AppDatabase): void {
 
   const defaultOrganizationId = ensureOrganization(db, 'TSD', 'Default organization')
 
-  const existingUserCols = db
-    .prepare(`PRAGMA table_info(users)`)
-    .all() as unknown as { name: string }[]
+  const existingUserCols = getTableColumns(db, 'users')
   const userColNames = new Set(existingUserCols.map((c) => c.name))
 
   if (!userColNames.has('organization_id')) {
@@ -703,9 +808,7 @@ function runMigrations(db: AppDatabase): void {
   }
 
   // Add columns introduced after the initial schema without dropping existing data
-  const existingCollectionCols = db
-    .prepare(`PRAGMA table_info(collections)`)
-    .all() as unknown as { name: string }[]
+  const existingCollectionCols = getTableColumns(db, 'collections')
   const collectionColNames = new Set(existingCollectionCols.map(c => c.name))
 
   if (!collectionColNames.has('organization_id')) {
@@ -769,9 +872,7 @@ function runMigrations(db: AppDatabase): void {
     console.log('[db] Migration: created collection_versions table')
   }
 
-  const existingFieldCols = db
-    .prepare(`PRAGMA table_info(collection_fields)`)
-    .all() as unknown as { name: string }[]
+  const existingFieldCols = getTableColumns(db, 'collection_fields')
   const fieldColNames = new Set(existingFieldCols.map(c => c.name))
 
   if (!fieldColNames.has('page_number')) {
@@ -855,7 +956,7 @@ function runMigrations(db: AppDatabase): void {
     }
   }
 
-  // ── Add 'location' to collection_fields CHECK constraint ─────────────────
+  // â”€â”€ Add 'location' to collection_fields CHECK constraint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const fieldsSqlRowForLocation = db
     .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='collection_fields'`)
     .get() as unknown as { sql: string } | undefined
@@ -907,9 +1008,7 @@ function runMigrations(db: AppDatabase): void {
   const supportsDocumentType = fieldsSqlRowForDocument?.sql?.includes("'document'") ?? false
 
   if (!supportsDocumentType) {
-    const collectionFieldCols = db
-      .prepare(`PRAGMA table_info(collection_fields)`)
-      .all() as Array<{ name: string }>
+    const collectionFieldCols = getTableColumns(db, 'collection_fields')
     const collectionFieldColNames = new Set(collectionFieldCols.map(column => column.name))
     const subtitleExpr = collectionFieldColNames.has('subtitle') ? 'subtitle' : 'NULL'
     const displayStyleExpr = collectionFieldColNames.has('display_style') ? "COALESCE(display_style, 'radio')" : "'radio'"
@@ -970,9 +1069,7 @@ function runMigrations(db: AppDatabase): void {
     }
   }
 
-  const existingResponseCols = db
-    .prepare(`PRAGMA table_info(collection_responses)`)
-    .all() as unknown as { name: string }[]
+  const existingResponseCols = getTableColumns(db, 'collection_responses')
   const responseColNames = new Set(existingResponseCols.map(c => c.name))
   if (!responseColNames.has('collection_version_id')) {
     db.exec(`ALTER TABLE collection_responses ADD COLUMN collection_version_id INTEGER`)
@@ -997,9 +1094,7 @@ function runMigrations(db: AppDatabase): void {
     rebuildCollectionResponseValues(db)
   }
 
-  const existingResponseValueCols = db
-    .prepare(`PRAGMA table_info(collection_response_values)`)
-    .all() as unknown as { name: string }[]
+  const existingResponseValueCols = getTableColumns(db, 'collection_response_values')
   const responseValueColNames = new Set(existingResponseValueCols.map(c => c.name))
 
   if (!responseValueColNames.has('staff_updated_by_name')) {
@@ -1011,9 +1106,7 @@ function runMigrations(db: AppDatabase): void {
     console.log('[db] Migration: added collection_response_values.staff_updated_at')
   }
 
-  const existingTableColCols = db
-    .prepare(`PRAGMA table_info(collection_table_columns)`)
-    .all() as unknown as { name: string }[]
+  const existingTableColCols = getTableColumns(db, 'collection_table_columns')
   const tableColNames = new Set(existingTableColCols.map(c => c.name))
 
   const tableSqlRow = db
@@ -1143,9 +1236,7 @@ function runMigrations(db: AppDatabase): void {
     `)
     console.log('[db] Migration: created response_attachments table')
   } else {
-    const existingAttachmentCols = db
-      .prepare(`PRAGMA table_info(response_attachments)`)
-      .all() as Array<{ name: string }>
+    const existingAttachmentCols = getTableColumns(db, 'response_attachments')
     if (!existingAttachmentCols.some(c => c.name === 'file_data')) {
       db.exec(`ALTER TABLE response_attachments ADD COLUMN file_data TEXT`)
       console.log('[db] Migration: added response_attachments.file_data for local storage fallback')
@@ -1205,9 +1296,7 @@ function runMigrations(db: AppDatabase): void {
     console.log('[db] Migration: created collection_ticket_templates table')
   }
 
-  const existingTicketFieldCols = db
-    .prepare(`PRAGMA table_info(ticket_fields)`)
-    .all() as unknown as { name: string }[]
+  const existingTicketFieldCols = getTableColumns(db, 'ticket_fields')
   const ticketFieldColNames = new Set(existingTicketFieldCols.map(c => c.name))
   const ticketFieldsSqlRow = db
     .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='ticket_fields'`)
@@ -1221,9 +1310,7 @@ function runMigrations(db: AppDatabase): void {
     rebuildTicketFields(db)
   }
 
-  const existingTicketTableColumnCols = db
-    .prepare(`PRAGMA table_info(ticket_table_columns)`)
-    .all() as unknown as { name: string }[]
+  const existingTicketTableColumnCols = getTableColumns(db, 'ticket_table_columns')
   const ticketTableColumnNames = new Set(existingTicketTableColumnCols.map(c => c.name))
   const ticketTableColumnsSqlRow = db
     .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='ticket_table_columns'`)
@@ -1238,9 +1325,7 @@ function runMigrations(db: AppDatabase): void {
     rebuildTicketTableColumns(db, ticketTableColumnNames.has('list_options'))
   }
 
-  const existingTicketResponseCols = db
-    .prepare(`PRAGMA table_info(ticket_responses)`)
-    .all() as unknown as { name: string }[]
+  const existingTicketResponseCols = getTableColumns(db, 'ticket_responses')
   const ticketResponseColNames = new Set(existingTicketResponseCols.map(c => c.name))
   const ticketResponsesSqlRow = db
     .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='ticket_responses'`)
@@ -1451,10 +1536,8 @@ function runMigrations(db: AppDatabase): void {
     markRan('migrate-legacy-notifications')
   }
 
-  // ── Categories: add organization_id and enforce per-org uniqueness ──────────
-  const existingCategoryCols = db
-    .prepare(`PRAGMA table_info(categories)`)
-    .all() as unknown as { name: string }[]
+  // â”€â”€ Categories: add organization_id and enforce per-org uniqueness â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const existingCategoryCols = getTableColumns(db, 'categories')
   const categoryColNames = new Set(existingCategoryCols.map(c => c.name))
 
   if (!categoryColNames.has('organization_id')) {
@@ -1505,7 +1588,7 @@ function runMigrations(db: AppDatabase): void {
     console.log(`[db] Seeded default "General" category for organization ${org.id}`)
   }
 
-  // ── Rebuild users table if CHECK constraint is missing super_admin ──────────
+  // â”€â”€ Rebuild users table if CHECK constraint is missing super_admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const usersSchema = (
     db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='users'`)
       .get() as unknown as { sql: string } | undefined
@@ -1538,7 +1621,7 @@ function runMigrations(db: AppDatabase): void {
     }
   }
 
-  // ── Promote null-org administrators to super_admin ──────────────────────────
+  // â”€â”€ Promote null-org administrators to super_admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const promoted = db
     .prepare(`UPDATE users SET role = 'super_admin' WHERE role = 'administrator' AND organization_id IS NULL`)
     .run()
@@ -1546,10 +1629,8 @@ function runMigrations(db: AppDatabase): void {
     console.log(`[db] Migration: promoted ${promoted.changes} global administrator(s) to super_admin`)
   }
 
-  // ── Invite / password columns on users ──────────────────────────────────────
-  const allUserCols = db
-    .prepare(`PRAGMA table_info(users)`)
-    .all() as unknown as { name: string }[]
+  // â”€â”€ Invite / password columns on users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const allUserCols = getTableColumns(db, 'users')
   const userColSet = new Set(allUserCols.map(c => c.name))
 
   if (!userColSet.has('password_hash')) {
@@ -1577,7 +1658,7 @@ function runMigrations(db: AppDatabase): void {
     console.log('[db] Migration: added users.reset_token_expires_at')
   }
 
-  // ── Rebuild users table to include 'reviewer' role ──────────────────────────
+  // â”€â”€ Rebuild users table to include 'reviewer' role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const usersSchemaV2 = (
     db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='users'`)
       .get() as unknown as { sql: string } | undefined
@@ -1641,9 +1722,7 @@ function runMigrations(db: AppDatabase): void {
     console.log('[db] Migration: created user_organizations table')
   }
 
-  const existingUserOrganizationCols = db
-    .prepare(`PRAGMA table_info(user_organizations)`)
-    .all() as Array<{ name: string }>
+  const existingUserOrganizationCols = getTableColumns(db, 'user_organizations')
   const userOrgColNames = new Set(existingUserOrganizationCols.map(column => column.name))
   if (!userOrgColNames.has('is_default')) {
     db.exec(`ALTER TABLE user_organizations ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0`)
@@ -1699,7 +1778,7 @@ function runMigrations(db: AppDatabase): void {
     }
   }
 
-  // ── Locations table ──────────────────────────────────────────────────────────
+  // â”€â”€ Locations table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (!tableExists(db, 'locations')) {
     db.exec(`
       CREATE TABLE locations (
@@ -1745,9 +1824,7 @@ function runMigrations(db: AppDatabase): void {
     `)
     console.log('[db] Migration: created gallery_assets table')
   } else {
-    const existingGalleryCols = db
-      .prepare(`PRAGMA table_info(gallery_assets)`)
-      .all() as Array<{ name: string }>
+    const existingGalleryCols = getTableColumns(db, 'gallery_assets')
     const galleryColNames = new Set(existingGalleryCols.map(c => c.name))
     if (!galleryColNames.has('file_data')) {
       db.exec(`ALTER TABLE gallery_assets ADD COLUMN file_data TEXT`)
@@ -1755,7 +1832,7 @@ function runMigrations(db: AppDatabase): void {
     }
   }
 
-  // ── Repair user_locations FK if broken by ALTER TABLE users RENAME ───────────
+  // â”€â”€ Repair user_locations FK if broken by ALTER TABLE users RENAME â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // When legacy_alter_table is OFF (default on Turso), renaming `users` to
   // `users_old` rewrites the FK in user_locations to reference `users_old`.
   // After `users_old` is dropped the FK is dangling and every INSERT fails.
@@ -1781,8 +1858,8 @@ function runMigrations(db: AppDatabase): void {
     }
   }
 
-  // ── General repair: fix ALL tables whose FK still points to dropped users_old ─
-  // The V2 users migration renamed `users` → `users_old` then dropped it.
+  // â”€â”€ General repair: fix ALL tables whose FK still points to dropped users_old â”€
+  // The V2 users migration renamed `users` â†’ `users_old` then dropped it.
   // Turso's ALTER TABLE RENAME rewrites FK references in all dependent tables.
   // Only user_locations was explicitly repaired above; this block catches the rest
   // (collections, collection_versions, notifications, notification_deliveries,
@@ -1794,7 +1871,7 @@ function runMigrations(db: AppDatabase): void {
   for (const { name, sql } of tablesWithBrokenUsersFk) {
     try {
       const rows = db.prepare(`SELECT * FROM "${name}"`).all() as unknown as Record<string, unknown>[]
-      const colInfo = db.prepare(`PRAGMA table_info("${name}")`).all() as unknown as Array<{ name: string }>
+      const colInfo = getTableColumns(db, name)
       const cols = colInfo.map(c => c.name)
       const fixedSql = sql.replace(/users_old/g, 'users')
 
@@ -1810,7 +1887,7 @@ function runMigrations(db: AppDatabase): void {
             stmt.run(...cols.map(c => (row[c] !== undefined ? row[c] : null)))
           }
         }
-        console.log(`[db] Migration: repaired ${name} FK (users_old → users)`)
+        console.log(`[db] Migration: repaired ${name} FK (users_old â†’ users)`)
       } finally {
         db.exec('PRAGMA foreign_keys = ON')
       }
@@ -1819,7 +1896,7 @@ function runMigrations(db: AppDatabase): void {
     }
   }
 
-  // ── Groups, Group Members, Collection Shares ────────────────────────────────
+  // â”€â”€ Groups, Group Members, Collection Shares â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (!tableExists(db, 'groups')) {
     db.exec(`
       CREATE TABLE groups (
@@ -1866,3 +1943,7 @@ function runMigrations(db: AppDatabase): void {
   }
 
 }
+
+
+
+

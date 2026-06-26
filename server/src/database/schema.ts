@@ -184,16 +184,28 @@ export function createSchema(db: AppDatabase): void {
     );
   `)
 
-  if (!tableHasColumn(db, 'collections', 'workflow_definition')) {
-    db.exec(`ALTER TABLE collections ADD COLUMN workflow_definition TEXT`)
+  try {
+    if (!tableHasColumn(db, 'collections', 'workflow_definition')) {
+      db.exec(`ALTER TABLE collections ADD COLUMN workflow_definition TEXT`)
+    }
+  } catch (e: any) {
+    if (!String(e?.message).includes('duplicate column name')) throw e
   }
 
-  if (!tableHasColumn(db, 'collection_fields', 'location_filter_enabled')) {
-    db.exec(`ALTER TABLE collection_fields ADD COLUMN location_filter_enabled INTEGER NOT NULL DEFAULT 0`)
+  try {
+    if (!tableHasColumn(db, 'collection_fields', 'location_filter_enabled')) {
+      db.exec(`ALTER TABLE collection_fields ADD COLUMN location_filter_enabled INTEGER NOT NULL DEFAULT 0`)
+    }
+  } catch (e: any) {
+    if (!String(e?.message).includes('duplicate column name')) throw e
   }
 
-  if (!tableHasColumn(db, 'collections', 'source_template_collection_id')) {
-    db.exec(`ALTER TABLE collections ADD COLUMN source_template_collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL`)
+  try {
+    if (!tableHasColumn(db, 'collections', 'source_template_collection_id')) {
+      db.exec(`ALTER TABLE collections ADD COLUMN source_template_collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL`)
+    }
+  } catch (e: any) {
+    if (!String(e?.message).includes('duplicate column name')) throw e
   }
 
   db.exec(`
@@ -605,8 +617,12 @@ export function createSchema(db: AppDatabase): void {
   `)
 
   // ── Sign-Up Sheet ──────────────────────────────────────────────────────────
-  if (!tableHasColumn(db, 'collections', 'collection_type')) {
-    db.exec(`ALTER TABLE collections ADD COLUMN collection_type TEXT NOT NULL DEFAULT 'standard'`)
+  try {
+    if (!tableHasColumn(db, 'collections', 'collection_type')) {
+      db.exec(`ALTER TABLE collections ADD COLUMN collection_type TEXT NOT NULL DEFAULT 'standard'`)
+    }
+  } catch (e: any) {
+    if (!String(e?.message).includes('duplicate column name')) throw e
   }
 
   db.exec(`
